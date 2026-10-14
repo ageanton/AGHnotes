@@ -1,4 +1,3 @@
-
 @file:OptIn(
     ExperimentalMaterial3Api::class,
     ExperimentalFoundationApi::class
@@ -49,6 +48,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -75,10 +75,6 @@ import java.util.*
 import kotlin.math.max
 import kotlin.math.min
 
-// ============================================================================
-// DATA MODEL & RICH DOCUMENT SERIALIZATION
-// ============================================================================
-
 enum class HeadingStyle(val label: String) {
     TEXT("Text"),
     SMALL("Small heading"),
@@ -100,12 +96,7 @@ data class RichNoteDocument(
 ) {
     fun toPlainPreview(): String {
         return text.lines()
-            .map { line ->
-                line.removePrefix("• ")
-                    .removePrefix("☐ ")
-                    .removePrefix("☑ ")
-                    .trim()
-            }
+            .map { it.removePrefix("• ").removePrefix("☐ ").removePrefix("☑ ").trim() }
             .filter { it.isNotEmpty() }
             .joinToString(" ")
     }
@@ -114,24 +105,18 @@ data class RichNoteDocument(
         val spansArray = JSONArray()
         spans.filter { it.end > it.start && (it.bold || it.italic || !it.link.isNullOrBlank()) }
             .forEach { span ->
-                spansArray.put(
-                    JSONObject().apply {
-                        put("s", span.start)
-                        put("e", span.end)
-                        if (span.bold) put("b", true)
-                        if (span.italic) put("i", true)
-                        if (!span.link.isNullOrBlank()) put("l", span.link)
-                    }
-                )
+                spansArray.put(JSONObject().apply {
+                    put("s", span.start)
+                    put("e", span.end)
+                    if (span.bold) put("b", true)
+                    if (span.italic) put("i", true)
+                    if (!span.link.isNullOrBlank()) put("l", span.link)
+                })
             }
-
         val headingsObj = JSONObject()
         lineHeadings.forEach { (lineIdx, style) ->
-            if (style != HeadingStyle.TEXT) {
-                headingsObj.put(lineIdx.toString(), style.name)
-            }
+            if (style != HeadingStyle.TEXT) headingsObj.put(lineIdx.toString(), style.name)
         }
-
         return JSONObject().apply {
             put("_format", "rich_v2")
             put("text", text)
@@ -143,7 +128,6 @@ data class RichNoteDocument(
     companion object {
         fun deserialize(rawContent: String): RichNoteDocument {
             if (rawContent.isBlank()) return RichNoteDocument()
-
             if (rawContent.trimStart().startsWith("{")) {
                 try {
                     val obj = JSONObject(rawContent)
@@ -169,7 +153,6 @@ data class RichNoteDocument(
                                 }
                             }
                         }
-
                         val headings = mutableMapOf<Int, HeadingStyle>()
                         val headingsObj = obj.optJSONObject("headings")
                         if (headingsObj != null) {
@@ -177,21 +160,15 @@ data class RichNoteDocument(
                             while (keys.hasNext()) {
                                 val key = keys.next()
                                 val lineIdx = key.toIntOrNull() ?: continue
-                                val styleName = headingsObj.optString(key)
-                                val style = runCatching { HeadingStyle.valueOf(styleName) }
+                                val style = runCatching { HeadingStyle.valueOf(headingsObj.optString(key)) }
                                     .getOrDefault(HeadingStyle.TEXT)
-                                if (style != HeadingStyle.TEXT) {
-                                    headings[lineIdx] = style
-                                }
+                                if (style != HeadingStyle.TEXT) headings[lineIdx] = style
                             }
                         }
                         return RichNoteDocument(text = text, spans = spans, lineHeadings = headings)
                     }
-                } catch (_: Exception) {
-                    // Fall through to legacy parser if corrupted JSON
-                }
+                } catch (_: Exception) {}
             }
-
             return parseLegacyMarkdown(rawContent)
         }
 
@@ -204,7 +181,6 @@ data class RichNoteDocument(
             raw.lines().forEachIndexed { lineIndex, rawLine ->
                 var working = rawLine
                 val trimmed = working.trimStart()
-
                 when {
                     trimmed.startsWith("# ") -> {
                         headings[lineIndex] = HeadingStyle.LARGE
@@ -214,24 +190,13 @@ data class RichNoteDocument(
                         headings[lineIndex] = HeadingStyle.SMALL
                         working = trimmed.replaceFirst(Regex("^#{2,3}\\s+"), "")
                     }
-                    trimmed.startsWith("- [ ] ") -> {
-                        working = "☐ " + trimmed.removePrefix("- [ ] ")
-                    }
-                    trimmed.startsWith("- [x] ") || trimmed.startsWith("- [X] ") -> {
-                        working = "☑ " + trimmed.substring(6)
-                    }
-                    trimmed.startsWith("- ") || trimmed.startsWith("* ") -> {
-                        working = "• " + trimmed.substring(2)
-                    }
-                    trimmed.startsWith("> ") -> {
-                        working = trimmed.removePrefix("> ")
-                    }
+                    trimmed.startsWith("- [ ] ") -> working = "☐ " + trimmed.removePrefix("- [ ] ")
+                    trimmed.startsWith("- [x] ") || trimmed.startsWith("- [X] ") -> working = "☑ " + trimmed.substring(6)
+                    trimmed.startsWith("- ") || trimmed.startsWith("* ") -> working = "• " + trimmed.substring(2)
+                    trimmed.startsWith("> ") -> working = trimmed.removePrefix("> ")
                 }
-
-                // Strip [[WikiLinks]] brackets while keeping inner text
                 working = working.replace(Regex("""\[\[([^\[\]]+)\]\]"""), "$1")
 
-                // Convert **bold** into InlineStyleSpan
                 val sb = StringBuilder()
                 var idx = 0
                 while (idx < working.length) {
@@ -250,12 +215,10 @@ data class RichNoteDocument(
                     sb.append(working[idx])
                     idx++
                 }
-
                 val finalLine = sb.toString()
                 cleanLines.add(finalLine)
                 currentOffset += finalLine.length + 1
             }
-
             return RichNoteDocument(
                 text = cleanLines.joinToString("\n"),
                 spans = spans,
@@ -273,13 +236,8 @@ data class Note(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
-    val previewText: String
-        get() = document.toPlainPreview()
+    val previewText: String get() = document.toPlainPreview()
 }
-
-// ============================================================================
-// LOCAL SQLITE DATABASE (BACKWARD-COMPATIBLE WITH EXISTING INSTALLS)
-// ============================================================================
 
 class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vault.db", null, 2) {
 
@@ -310,14 +268,11 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
-        if (!db.isReadOnly) {
-            cleanupLegacyPromotionalNotes(db)
-        }
+        if (!db.isReadOnly) cleanupLegacyPromotionalNotes(db)
     }
 
     private fun cleanupLegacyPromotionalNotes(db: SQLiteDatabase) {
         try {
-            // Remove untouched promotional v1.0 starter notes and unlock any previously locked notes
             db.execSQL(
                 """
                 DELETE FROM notes 
@@ -326,8 +281,7 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
             )
             db.execSQL("UPDATE notes SET is_locked = 0 WHERE is_locked != 0")
             db.execSQL("DELETE FROM notes WHERE is_trashed = 1")
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     fun upsertNote(note: Note) {
@@ -346,28 +300,20 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
                 put("updated_at", note.updatedAt)
             }
             writableDatabase.insertWithOnConflict("notes", null, values, SQLiteDatabase.CONFLICT_REPLACE)
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     fun deleteNote(id: String) {
         try {
             writableDatabase.delete("notes", "id = ?", arrayOf(id))
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
     }
 
     fun getAllNotes(): List<Note> {
         val list = mutableListOf<Note>()
         try {
             val cursor = readableDatabase.query(
-                "notes",
-                null,
-                "is_trashed = 0",
-                null,
-                null,
-                null,
-                "updated_at DESC"
+                "notes", null, "is_trashed = 0", null, null, null, "updated_at DESC"
             )
             cursor.use { c ->
                 while (c.moveToNext()) {
@@ -377,7 +323,6 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
                     val isPinned = c.getInt(c.getColumnIndexOrThrow("is_pinned")) == 1
                     val createdAt = c.getLong(c.getColumnIndexOrThrow("created_at"))
                     val updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at"))
-
                     list.add(
                         Note(
                             id = id,
@@ -390,15 +335,10 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
                     )
                 }
             }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
         return list.sortedByDescending { it.updatedAt }
     }
 }
-
-// ============================================================================
-// FORMATTING ENGINE & WYSIWYG VISUAL TRANSFORMATION
-// ============================================================================
 
 fun adjustDocumentOnEdit(
     oldDoc: RichNoteDocument,
@@ -411,9 +351,7 @@ fun adjustDocumentOnEdit(
 
     var prefix = 0
     val minLen = min(oldText.length, newText.length)
-    while (prefix < minLen && oldText[prefix] == newText[prefix]) {
-        prefix++
-    }
+    while (prefix < minLen && oldText[prefix] == newText[prefix]) prefix++
 
     var oldSuffix = oldText.length
     var newSuffix = newText.length
@@ -425,7 +363,6 @@ fun adjustDocumentOnEdit(
     val delta = newText.length - oldText.length
     val insertedCount = newSuffix - prefix
 
-    // 1. Shift or expand inline spans
     val updatedSpans = mutableListOf<InlineStyleSpan>()
     for (span in oldDoc.spans) {
         val newStart = when {
@@ -438,27 +375,15 @@ fun adjustDocumentOnEdit(
             span.end >= oldSuffix -> (span.end + delta).coerceAtLeast(prefix)
             else -> prefix
         }
-        if (newEnd > newStart) {
-            updatedSpans.add(span.copy(start = newStart, end = newEnd))
-        }
+        if (newEnd > newStart) updatedSpans.add(span.copy(start = newStart, end = newEnd))
     }
 
     if (insertedCount > 0 && (activeBold || activeItalic)) {
-        updatedSpans.add(
-            InlineStyleSpan(
-                start = prefix,
-                end = newSuffix,
-                bold = activeBold,
-                italic = activeItalic
-            )
-        )
+        updatedSpans.add(InlineStyleSpan(start = prefix, end = newSuffix, bold = activeBold, italic = activeItalic))
     }
 
-    // 2. Shift line heading styles if newlines were inserted or deleted
-    val oldRemovedSegment = oldText.substring(prefix, oldSuffix)
-    val newInsertedSegment = newText.substring(prefix, newSuffix)
-    val removedNewlines = oldRemovedSegment.count { it == '\n' }
-    val addedNewlines = newInsertedSegment.count { it == '\n' }
+    val removedNewlines = oldText.substring(prefix, oldSuffix).count { it == '\n' }
+    val addedNewlines = newText.substring(prefix, newSuffix).count { it == '\n' }
     val lineDelta = addedNewlines - removedNewlines
 
     val updatedHeadings = if (lineDelta == 0) {
@@ -470,7 +395,6 @@ fun adjustDocumentOnEdit(
             when {
                 lineIdx < editLineIndex -> map[lineIdx] = style
                 lineIdx == editLineIndex -> {
-                    // If Enter was pressed at the very start of a heading line, push the heading down
                     val lineStartOffset = oldText.lastIndexOf('\n', (prefix - 1).coerceAtLeast(0))
                         .let { if (it == -1) 0 else it + 1 }
                     if (addedNewlines > 0 && prefix == lineStartOffset) {
@@ -500,9 +424,7 @@ fun normalizeSpans(spans: List<InlineStyleSpan>, textLength: Int): List<InlineSt
     val clamped = spans.mapNotNull { s ->
         val start = s.start.coerceIn(0, textLength)
         val end = s.end.coerceIn(0, textLength)
-        if (end > start && (s.bold || s.italic || !s.link.isNullOrBlank())) {
-            s.copy(start = start, end = end)
-        } else null
+        if (end > start && (s.bold || s.italic || !s.link.isNullOrBlank())) s.copy(start = start, end = end) else null
     }
     if (clamped.isEmpty()) return emptyList()
 
@@ -513,7 +435,6 @@ fun normalizeSpans(spans: List<InlineStyleSpan>, textLength: Int): List<InlineSt
         val segStart = points[i]
         val segEnd = points[i + 1]
         if (segEnd <= segStart) continue
-
         val covering = clamped.filter { it.start <= segStart && it.end >= segEnd }
         if (covering.isNotEmpty()) {
             val bold = covering.any { it.bold }
@@ -550,35 +471,19 @@ fun toggleSelectionInlineStyle(
         if (span.end <= start || span.start >= end) {
             result.add(span)
         } else {
-            if (span.start < start) {
-                result.add(span.copy(end = start))
-            }
-            if (span.end > end) {
-                result.add(span.copy(start = end))
-            }
+            if (span.start < start) result.add(span.copy(end = start))
+            if (span.end > end) result.add(span.copy(start = end))
             val overlapStart = max(span.start, start)
             val overlapEnd = min(span.end, end)
             val newBold = if (toggleBold) !currentlyAllBold else span.bold
             val newItalic = if (toggleItalic) !currentlyAllItalic else span.italic
             if (newBold || newItalic || span.link != null) {
-                result.add(
-                    span.copy(
-                        start = overlapStart,
-                        end = overlapEnd,
-                        bold = newBold,
-                        italic = newItalic
-                    )
-                )
+                result.add(span.copy(start = overlapStart, end = overlapEnd, bold = newBold, italic = newItalic))
             }
         }
     }
-
-    if (toggleBold && !currentlyAllBold) {
-        result.add(InlineStyleSpan(start, end, bold = true))
-    }
-    if (toggleItalic && !currentlyAllItalic) {
-        result.add(InlineStyleSpan(start, end, italic = true))
-    }
+    if (toggleBold && !currentlyAllBold) result.add(InlineStyleSpan(start, end, bold = true))
+    if (toggleItalic && !currentlyAllItalic) result.add(InlineStyleSpan(start, end, italic = true))
 
     return doc.copy(spans = normalizeSpans(result, doc.text.length))
 }
@@ -593,76 +498,52 @@ class WysiwygVisualTransformation(
         val raw = text.text
         val styled = buildAnnotatedString {
             append(raw)
-
-            // 1. Apply line-level headings, bullets, and checklist styles
             var lineStart = 0
             var lineIdx = 0
-            val lines = raw.split('\n')
-            for (line in lines) {
+            for (line in raw.split('\n')) {
                 val lineEnd = lineStart + line.length
                 if (lineEnd > lineStart) {
                     when (doc.lineHeadings[lineIdx] ?: HeadingStyle.TEXT) {
-                        HeadingStyle.LARGE -> {
-                            addStyle(
-                                SpanStyle(
-                                    fontSize = (baseFontSizeSp + 7f).sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = (-0.3).sp
-                                ),
-                                lineStart,
-                                lineEnd
-                            )
-                        }
-                        HeadingStyle.SMALL -> {
-                            addStyle(
-                                SpanStyle(
-                                    fontSize = (baseFontSizeSp + 3f).sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = (-0.15).sp
-                                ),
-                                lineStart,
-                                lineEnd
-                            )
-                        }
+                        HeadingStyle.LARGE -> addStyle(
+                            SpanStyle(
+                                fontSize = (baseFontSizeSp + 7f).sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = (-0.3).sp
+                            ),
+                            lineStart,
+                            lineEnd
+                        )
+                        HeadingStyle.SMALL -> addStyle(
+                            SpanStyle(
+                                fontSize = (baseFontSizeSp + 3f).sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = (-0.15).sp
+                            ),
+                            lineStart,
+                            lineEnd
+                        )
                         HeadingStyle.TEXT -> {}
                     }
-
                     when {
-                        line.startsWith("• ") -> {
-                            addStyle(
-                                SpanStyle(
-                                    color = accentColor,
-                                    fontWeight = FontWeight.Bold
-                                ),
-                                lineStart,
-                                (lineStart + 2).coerceAtMost(lineEnd)
-                            )
-                        }
-                        line.startsWith("☐ ") -> {
-                            addStyle(
-                                SpanStyle(
-                                    color = mutedColor,
-                                    fontSize = (baseFontSizeSp + 2f).sp
-                                ),
-                                lineStart,
-                                (lineStart + 2).coerceAtMost(lineEnd)
-                            )
-                        }
+                        line.startsWith("• ") -> addStyle(
+                            SpanStyle(color = accentColor, fontWeight = FontWeight.Bold),
+                            lineStart,
+                            (lineStart + 2).coerceAtMost(lineEnd)
+                        )
+                        line.startsWith("☐ ") -> addStyle(
+                            SpanStyle(color = mutedColor, fontSize = (baseFontSizeSp + 2f).sp),
+                            lineStart,
+                            (lineStart + 2).coerceAtMost(lineEnd)
+                        )
                         line.startsWith("☑ ") -> {
                             addStyle(
-                                SpanStyle(
-                                    color = accentColor,
-                                    fontSize = (baseFontSizeSp + 2f).sp
-                                ),
+                                SpanStyle(color = accentColor, fontSize = (baseFontSizeSp + 2f).sp),
                                 lineStart,
                                 (lineStart + 2).coerceAtMost(lineEnd)
                             )
                             if (lineEnd > lineStart + 2) {
                                 addStyle(
-                                    SpanStyle(
-                                        color = mutedColor,
-                                        textDecoration = TextDecoration.LineThrough
-                                    ),
+                                    SpanStyle(color = mutedColor, textDecoration = TextDecoration.LineThrough),
                                     lineStart + 2,
                                     lineEnd
                                 )
@@ -673,27 +554,14 @@ class WysiwygVisualTransformation(
                 lineStart = lineEnd + 1
                 lineIdx++
             }
-
-            // 2. Apply inline Bold, Italic, and Link spans
             for (span in doc.spans) {
                 val s = span.start.coerceIn(0, raw.length)
                 val e = span.end.coerceIn(0, raw.length)
                 if (e > s) {
-                    if (span.bold) {
-                        addStyle(SpanStyle(fontWeight = FontWeight.Bold), s, e)
-                    }
-                    if (span.italic) {
-                        addStyle(SpanStyle(fontStyle = FontStyle.Italic), s, e)
-                    }
+                    if (span.bold) addStyle(SpanStyle(fontWeight = FontWeight.Bold), s, e)
+                    if (span.italic) addStyle(SpanStyle(fontStyle = FontStyle.Italic), s, e)
                     if (!span.link.isNullOrBlank()) {
-                        addStyle(
-                            SpanStyle(
-                                color = accentColor,
-                                textDecoration = TextDecoration.Underline
-                            ),
-                            s,
-                            e
-                        )
+                        addStyle(SpanStyle(color = accentColor, textDecoration = TextDecoration.Underline), s, e)
                     }
                 }
             }
@@ -701,10 +569,6 @@ class WysiwygVisualTransformation(
         return TransformedText(styled, OffsetMapping.Identity)
     }
 }
-
-// ============================================================================
-// DATE FORMATTING HELPER
-// ============================================================================
 
 fun formatRelativeDate(millis: Long): String {
     val now = System.currentTimeMillis()
@@ -715,25 +579,15 @@ fun formatRelativeDate(millis: Long): String {
     return when {
         diff < 60_000L -> "Just now"
         calNow.get(Calendar.YEAR) == calNote.get(Calendar.YEAR) &&
-            calNow.get(Calendar.DAY_OF_YEAR) == calNote.get(Calendar.DAY_OF_YEAR) -> {
+            calNow.get(Calendar.DAY_OF_YEAR) == calNote.get(Calendar.DAY_OF_YEAR) ->
             SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
-        }
         calNow.get(Calendar.YEAR) == calNote.get(Calendar.YEAR) &&
-            calNow.get(Calendar.DAY_OF_YEAR) - calNote.get(Calendar.DAY_OF_YEAR) == 1 -> {
-            "Yesterday"
-        }
-        calNow.get(Calendar.YEAR) == calNote.get(Calendar.YEAR) -> {
+            calNow.get(Calendar.DAY_OF_YEAR) - calNote.get(Calendar.DAY_OF_YEAR) == 1 -> "Yesterday"
+        calNow.get(Calendar.YEAR) == calNote.get(Calendar.YEAR) ->
             SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(millis))
-        }
-        else -> {
-            SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(millis))
-        }
+        else -> SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(millis))
     }
 }
-
-// ============================================================================
-// MAIN ACTIVITY & THEME
-// ============================================================================
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -744,7 +598,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var isDarkTheme by remember { mutableStateOf(prefs.getBoolean("dark_mode", false)) }
-            var fontScaleIndex by remember { mutableStateOf(prefs.getInt("font_scale", 1)) } // 0=Small, 1=Default, 2=Large
+            var fontScaleIndex by remember { mutableStateOf(prefs.getInt("font_scale", 1)) }
 
             val colorScheme = if (isDarkTheme) {
                 darkColorScheme(
@@ -807,10 +661,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ============================================================================
-// ROOT APP COORDINATOR
-// ============================================================================
-
 @Composable
 fun NotesApp(
     db: NotesDatabase,
@@ -827,7 +677,6 @@ fun NotesApp(
     var activeNoteId by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
-    // Modal states
     var noteToRename by remember { mutableStateOf<Note?>(null) }
     var noteToDelete by remember { mutableStateOf<Note?>(null) }
     var showSettingsDialog by remember { mutableStateOf(false) }
@@ -838,9 +687,7 @@ fun NotesApp(
 
     fun handleDeleteWithUndo(target: Note) {
         db.deleteNote(target.id)
-        if (activeNoteId == target.id) {
-            activeNoteId = null
-        }
+        if (activeNoteId == target.id) activeNoteId = null
         refreshNotes()
         scope.launch {
             snackbarHostState.currentSnackbarData?.dismiss()
@@ -899,12 +746,8 @@ fun NotesApp(
                         db.upsertNote(updated)
                         refreshNotes()
                     },
-                    onRequestRename = { current ->
-                        noteToRename = current
-                    },
-                    onRequestDelete = { current ->
-                        noteToDelete = current
-                    }
+                    onRequestRename = { current -> noteToRename = current },
+                    onRequestDelete = { current -> noteToDelete = current }
                 )
             } else {
                 NotesHomeScreen(
@@ -913,10 +756,7 @@ fun NotesApp(
                     onSearchQueryChange = { searchQuery = it },
                     onOpenNote = { note -> activeNoteId = note.id },
                     onCreateNote = {
-                        val fresh = Note(
-                            title = "",
-                            document = RichNoteDocument()
-                        )
+                        val fresh = Note(title = "", document = RichNoteDocument())
                         db.upsertNote(fresh)
                         refreshNotes()
                         activeNoteId = fresh.id
@@ -937,7 +777,6 @@ fun NotesApp(
         }
     }
 
-    // Rename Dialog
     if (noteToRename != null) {
         val target = noteToRename!!
         RenameNoteDialog(
@@ -955,7 +794,6 @@ fun NotesApp(
         )
     }
 
-    // Delete Confirmation Dialog
     if (noteToDelete != null) {
         val target = noteToDelete!!
         DeleteConfirmationDialog(
@@ -969,7 +807,6 @@ fun NotesApp(
         )
     }
 
-    // Genuine Settings Dialog
     if (showSettingsDialog) {
         SettingsDialog(
             isDarkTheme = isDarkTheme,
@@ -980,10 +817,6 @@ fun NotesApp(
         )
     }
 }
-
-// ============================================================================
-// HOMEPAGE (FOCUSED ON NOTES)
-// ============================================================================
 
 @Composable
 fun NotesHomeScreen(
@@ -1003,20 +836,14 @@ fun NotesHomeScreen(
             notes
         } else {
             notes.filter { note ->
-                note.title.lowercase().contains(q) ||
-                    note.document.text.lowercase().contains(q)
+                note.title.lowercase().contains(q) || note.document.text.lowercase().contains(q)
             }
         }
         matching.sortedByDescending { it.updatedAt }
     }
 
-    val pinnedNotes = remember(filteredNotes) {
-        filteredNotes.filter { it.isPinned }
-    }
-
-    val unpinnedNotes = remember(filteredNotes) {
-        filteredNotes.filter { !it.isPinned }
-    }
+    val pinnedNotes = remember(filteredNotes) { filteredNotes.filter { it.isPinned } }
+    val unpinnedNotes = remember(filteredNotes) { filteredNotes.filter { !it.isPinned } }
 
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -1031,7 +858,6 @@ fun NotesHomeScreen(
         ) {
             Spacer(Modifier.height(16.dp))
 
-            // Clean App Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1084,7 +910,6 @@ fun NotesHomeScreen(
 
             Spacer(Modifier.height(14.dp))
 
-            // Search Field
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
                 shape = RoundedCornerShape(10.dp),
@@ -1138,7 +963,6 @@ fun NotesHomeScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            // Notes List or Empty State
             if (filteredNotes.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -1158,11 +982,7 @@ fun NotesHomeScreen(
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = if (searchQuery.isNotBlank()) {
-                                "Try a different search term."
-                            } else {
-                                "Create a note to start writing."
-                            },
+                            text = if (searchQuery.isNotBlank()) "Try a different search term." else "Create a note to start writing.",
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1184,11 +1004,8 @@ fun NotesHomeScreen(
                         .weight(1f),
                     contentPadding = PaddingValues(bottom = 40.dp)
                 ) {
-                    // Pinned Section (only shown when pinned notes exist)
                     if (pinnedNotes.isNotEmpty()) {
-                        item(key = "header_pinned") {
-                            SectionHeader("Pinned")
-                        }
+                        item(key = "header_pinned") { SectionHeader("Pinned") }
                         items(pinnedNotes, key = { "pinned_${it.id}" }) { note ->
                             NoteListItem(
                                 note = note,
@@ -1198,15 +1015,10 @@ fun NotesHomeScreen(
                                 onDelete = { onRequestDelete(note) }
                             )
                         }
-                        item(key = "spacer_pinned") {
-                            Spacer(Modifier.height(20.dp))
-                        }
+                        item(key = "spacer_pinned") { Spacer(Modifier.height(20.dp)) }
                     }
 
-                    // All Notes Section
-                    item(key = "header_all_notes") {
-                        SectionHeader("All Notes")
-                    }
+                    item(key = "header_all_notes") { SectionHeader("All Notes") }
                     if (unpinnedNotes.isEmpty() && pinnedNotes.isNotEmpty()) {
                         item(key = "all_pinned_hint") {
                             Text(
@@ -1296,9 +1108,8 @@ fun NoteListItem(
 
                 Spacer(Modifier.height(4.dp))
 
-                val preview = note.previewText
                 Text(
-                    text = preview.ifBlank { "No additional text" },
+                    text = note.previewText.ifBlank { "No additional text" },
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1315,7 +1126,6 @@ fun NoteListItem(
                 )
             }
 
-            // Visible Three-Dot Action Menu
             Box {
                 IconButton(
                     onClick = { menuExpanded = true },
@@ -1419,14 +1229,7 @@ fun NoteActionDropdownMenu(
     }
 }
 
-// ============================================================================
-// NOTE EDITOR SCREEN (DISTRACTION-FREE WYSIWYG CANVAS)
-// ============================================================================
-
-enum class SaveStatus {
-    SAVED,
-    SAVING
-}
+enum class SaveStatus { SAVED, SAVING }
 
 @Composable
 fun NoteEditorScreen(
@@ -1438,7 +1241,6 @@ fun NoteEditorScreen(
     onRequestRename: (Note) -> Unit,
     onRequestDelete: (Note) -> Unit
 ) {
-    // Local editor states keyed by note.id so background autosave never interrupts typing
     var title by remember(note.id) { mutableStateOf(note.title) }
     var doc by remember(note.id) { mutableStateOf(note.document) }
     var textFieldValue by remember(note.id) {
@@ -1450,11 +1252,8 @@ fun NoteEditorScreen(
         )
     }
 
-    // Sync external rename if triggered via the Rename dialog
     LaunchedEffect(note.title) {
-        if (note.title != title) {
-            title = note.title
-        }
+        if (note.title != title) title = note.title
     }
 
     var saveStatus by remember { mutableStateOf(SaveStatus.SAVED) }
@@ -1467,7 +1266,6 @@ fun NoteEditorScreen(
     val bodyFocusRequester = remember { FocusRequester() }
     val titleFocusRequester = remember { FocusRequester() }
 
-    // Auto-focus title when creating a brand new empty note
     LaunchedEffect(note.id) {
         if (note.title.isEmpty() && note.document.text.isEmpty()) {
             delay(100)
@@ -1475,13 +1273,11 @@ fun NoteEditorScreen(
         }
     }
 
-    fun buildCurrentNote(): Note {
-        return note.copy(
-            title = title.trim(),
-            document = doc,
-            updatedAt = System.currentTimeMillis()
-        )
-    }
+    fun buildCurrentNote(): Note = note.copy(
+        title = title.trim(),
+        document = doc,
+        updatedAt = System.currentTimeMillis()
+    )
 
     fun triggerImmediateSave(updatedDoc: RichNoteDocument = doc, updatedTitle: String = title) {
         saveStatus = SaveStatus.SAVING
@@ -1494,7 +1290,6 @@ fun NoteEditorScreen(
         )
     }
 
-    // Settle Saving -> Saved indicator smoothly
     LaunchedEffect(title, doc) {
         if (saveStatus == SaveStatus.SAVING) {
             delay(400)
@@ -1507,14 +1302,12 @@ fun NoteEditorScreen(
         onBack()
     }
 
-    // Determine current line index and line bounds for toolbar controls
     val currentCursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
     val currentLineIndex = remember(textFieldValue.text, currentCursor) {
         textFieldValue.text.substring(0, currentCursor).count { it == '\n' }
     }
     val currentHeadingStyle = doc.lineHeadings[currentLineIndex] ?: HeadingStyle.TEXT
 
-    // Sync activeBold / activeItalic with current cursor or selection
     val isSelectionBold = remember(doc.spans, textFieldValue.selection, activeBold) {
         val sel = textFieldValue.selection
         if (!sel.collapsed) {
@@ -1533,7 +1326,6 @@ fun NoteEditorScreen(
         }
     }
 
-    // Show formatting bar automatically when text is selected, or when toggled via 'Aa'
     val isToolbarVisible = showFormattingBar || !textFieldValue.selection.collapsed
 
     val accentColor = MaterialTheme.colorScheme.primary
@@ -1546,3 +1338,653 @@ fun NoteEditorScreen(
             mutedColor = mutedColor
         )
     }
+
+    fun toggleLinePrefix(targetPrefix: String) {
+        val raw = textFieldValue.text
+        val cursor = textFieldValue.selection.start.coerceIn(0, raw.length)
+        val lineStart = raw.lastIndexOf('\n', (cursor - 1).coerceAtLeast(0))
+            .let { if (it == -1) 0 else it + 1 }
+        val lineEnd = raw.indexOf('\n', cursor).let { if (it == -1) raw.length else it }
+        val currentLine = raw.substring(lineStart, lineEnd)
+
+        val existingPrefixLen = when {
+            currentLine.startsWith("• ") || currentLine.startsWith("☐ ") || currentLine.startsWith("☑ ") -> 2
+            else -> 0
+        }
+        val alreadyHasTarget = when (targetPrefix) {
+            "☐ " -> currentLine.startsWith("☐ ") || currentLine.startsWith("☑ ")
+            else -> currentLine.startsWith(targetPrefix)
+        }
+
+        val replacementLine = if (alreadyHasTarget) {
+            currentLine.substring(existingPrefixLen)
+        } else {
+            targetPrefix + currentLine.substring(existingPrefixLen)
+        }
+
+        val newText = raw.substring(0, lineStart) + replacementLine + raw.substring(lineEnd)
+        val lengthDelta = replacementLine.length - currentLine.length
+        val newCursor = (cursor + lengthDelta).coerceIn(lineStart, lineStart + replacementLine.length)
+
+        val updatedDoc = adjustDocumentOnEdit(doc, newText, activeBold = false, activeItalic = false)
+        doc = updatedDoc
+        textFieldValue = TextFieldValue(text = newText, selection = TextRange(newCursor))
+        triggerImmediateSave(updatedDoc = updatedDoc)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 720.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = {
+                        onAutoSave(buildCurrentNote())
+                        onBack()
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back to notes",
+                        tint = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = if (saveStatus == SaveStatus.SAVING) "Saving…" else "Saved",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(end = 6.dp)
+                    )
+
+                    IconButton(onClick = { showFormattingBar = !showFormattingBar }) {
+                        Icon(
+                            imageVector = Icons.Default.FormatSize,
+                            contentDescription = "Format text",
+                            tint = if (isToolbarVisible) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    Box {
+                        IconButton(onClick = { showMoreMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreHoriz,
+                                contentDescription = "Note options",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        NoteActionDropdownMenu(
+                            expanded = showMoreMenu,
+                            isPinned = note.isPinned,
+                            onDismiss = { showMoreMenu = false },
+                            onTogglePin = {
+                                showMoreMenu = false
+                                onTogglePin(buildCurrentNote())
+                            },
+                            onRename = {
+                                showMoreMenu = false
+                                onRequestRename(buildCurrentNote())
+                            },
+                            onDelete = {
+                                showMoreMenu = false
+                                onRequestDelete(buildCurrentNote())
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 680.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 12.dp)
+            ) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (title.isEmpty()) {
+                        Text(
+                            text = "Title",
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = (-0.4).sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                        )
+                    }
+                    BasicTextField(
+                        value = title,
+                        onValueChange = { newTitle ->
+                            title = newTitle
+                            triggerImmediateSave(updatedTitle = newTitle)
+                        },
+                        textStyle = TextStyle(
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            lineHeight = 32.sp,
+                            letterSpacing = (-0.4).sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        ),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Sentences,
+                            imeAction = ImeAction.Next
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onNext = { runCatching { bodyFocusRequester.requestFocus() } }
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(titleFocusRequester)
+                    )
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 420.dp)
+                ) {
+                    if (textFieldValue.text.isEmpty()) {
+                        Text(
+                            text = "Start writing…",
+                            fontSize = baseFontSizeSp.sp,
+                            lineHeight = (baseFontSizeSp * 1.6f).sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                        )
+                    }
+
+                    BasicTextField(
+                        value = textFieldValue,
+                        onValueChange = { incoming ->
+                            val oldText = textFieldValue.text
+                            val newText = incoming.text
+
+                            if (newText == oldText && incoming.selection.collapsed && incoming.selection != textFieldValue.selection) {
+                                val tapOffset = incoming.selection.start.coerceIn(0, newText.length)
+                                val lineStart = newText.lastIndexOf('\n', (tapOffset - 1).coerceAtLeast(0))
+                                    .let { if (it == -1) 0 else it + 1 }
+                                val lineEnd = newText.indexOf('\n', tapOffset).let { if (it == -1) newText.length else it }
+                                val line = newText.substring(lineStart, lineEnd)
+
+                                if ((line.startsWith("☐ ") || line.startsWith("☑ ")) && tapOffset <= lineStart + 2) {
+                                    val toggledPrefix = if (line.startsWith("☐ ")) "☑ " else "☐ "
+                                    val updatedText = newText.substring(0, lineStart) + toggledPrefix + line.substring(2)
+                                    val updatedDoc = doc.copy(text = updatedText)
+                                    doc = updatedDoc
+                                    textFieldValue = TextFieldValue(
+                                        text = updatedText,
+                                        selection = TextRange((lineStart + 2).coerceAtMost(updatedText.length))
+                                    )
+                                    triggerImmediateSave(updatedDoc = updatedDoc)
+                                    return@BasicTextField
+                                }
+                            }
+
+                            if (newText.length == oldText.length + 1 && incoming.selection.collapsed) {
+                                val insIdx = (incoming.selection.start - 1).coerceIn(0, newText.lastIndex)
+                                if (newText[insIdx] == '\n') {
+                                    val prevLineStart = newText.lastIndexOf('\n', (insIdx - 1).coerceAtLeast(0))
+                                        .let { if (it == -1) 0 else it + 1 }
+                                    val prevLine = newText.substring(prevLineStart, insIdx)
+
+                                    when {
+                                        prevLine == "• " || prevLine == "☐ " || prevLine == "☑ " -> {
+                                            val cleanedText = newText.substring(0, prevLineStart) + newText.substring(insIdx + 1)
+                                            val updatedDoc = adjustDocumentOnEdit(doc, cleanedText, activeBold, activeItalic)
+                                            doc = updatedDoc
+                                            textFieldValue = TextFieldValue(text = cleanedText, selection = TextRange(prevLineStart))
+                                            triggerImmediateSave(updatedDoc = updatedDoc)
+                                            return@BasicTextField
+                                        }
+                                        prevLine.startsWith("• ") -> {
+                                            val autoText = newText.substring(0, insIdx + 1) + "• " + newText.substring(insIdx + 1)
+                                            val updatedDoc = adjustDocumentOnEdit(doc, autoText, activeBold, activeItalic)
+                                            doc = updatedDoc
+                                            textFieldValue = TextFieldValue(text = autoText, selection = TextRange(insIdx + 3))
+                                            triggerImmediateSave(updatedDoc = updatedDoc)
+                                            return@BasicTextField
+                                        }
+                                        prevLine.startsWith("☐ ") || prevLine.startsWith("☑ ") -> {
+                                            val autoText = newText.substring(0, insIdx + 1) + "☐ " + newText.substring(insIdx + 1)
+                                            val updatedDoc = adjustDocumentOnEdit(doc, autoText, activeBold, activeItalic)
+                                            doc = updatedDoc
+                                            textFieldValue = TextFieldValue(text = autoText, selection = TextRange(insIdx + 3))
+                                            triggerImmediateSave(updatedDoc = updatedDoc)
+                                            return@BasicTextField
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (newText != oldText) {
+                                val updatedDoc = adjustDocumentOnEdit(doc, newText, activeBold, activeItalic)
+                                doc = updatedDoc
+                                textFieldValue = incoming
+                                triggerImmediateSave(updatedDoc = updatedDoc)
+                            } else {
+                                textFieldValue = incoming
+                            }
+                        },
+                        textStyle = TextStyle(
+                            fontSize = baseFontSizeSp.sp,
+                            lineHeight = (baseFontSizeSp * 1.6f).sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        ),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                        visualTransformation = visualTransformation,
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 420.dp)
+                            .focusRequester(bodyFocusRequester)
+                    )
+                }
+
+                Spacer(Modifier.height(64.dp))
+            }
+        }
+
+        AnimatedVisibility(
+            visible = isToolbarVisible,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                FormattingToolbar(
+                    currentHeading = currentHeadingStyle,
+                    isBoldActive = isSelectionBold,
+                    isItalicActive = isSelectionItalic,
+                    onSelectHeading = { chosenStyle ->
+                        val updatedMap = doc.lineHeadings.toMutableMap()
+                        if (chosenStyle == HeadingStyle.TEXT) {
+                            updatedMap.remove(currentLineIndex)
+                        } else {
+                            updatedMap[currentLineIndex] = chosenStyle
+                        }
+                        val updatedDoc = doc.copy(lineHeadings = updatedMap)
+                        doc = updatedDoc
+                        triggerImmediateSave(updatedDoc = updatedDoc)
+                    },
+                    onToggleBold = {
+                        val sel = textFieldValue.selection
+                        if (!sel.collapsed) {
+                            val updatedDoc = toggleSelectionInlineStyle(doc, sel, toggleBold = true)
+                            doc = updatedDoc
+                            triggerImmediateSave(updatedDoc = updatedDoc)
+                        } else {
+                            activeBold = !activeBold
+                        }
+                    },
+                    onToggleItalic = {
+                        val sel = textFieldValue.selection
+                        if (!sel.collapsed) {
+                            val updatedDoc = toggleSelectionInlineStyle(doc, sel, toggleItalic = true)
+                            doc = updatedDoc
+                            triggerImmediateSave(updatedDoc = updatedDoc)
+                        } else {
+                            activeItalic = !activeItalic
+                        }
+                    },
+                    onToggleBulletList = { toggleLinePrefix("• ") },
+                    onToggleChecklist = { toggleLinePrefix("☐ ") },
+                    onOpenLinkDialog = { showLinkDialog = true }
+                )
+            }
+        }
+    }
+
+    if (showLinkDialog) {
+        val sel = textFieldValue.selection
+        val selectedLabel = if (!sel.collapsed) textFieldValue.text.substring(sel.min, sel.max) else ""
+
+        InsertLinkDialog(
+            initialLabel = selectedLabel,
+            onDismiss = { showLinkDialog = false },
+            onInsertLink = { label, url ->
+                val raw = textFieldValue.text
+                val insertStart = sel.min.coerceIn(0, raw.length)
+                val insertEnd = sel.max.coerceIn(0, raw.length)
+                val displayLabel = label.ifBlank { url }
+                val newText = raw.substring(0, insertStart) + displayLabel + raw.substring(insertEnd)
+                val adjustedDoc = adjustDocumentOnEdit(doc, newText, activeBold = false, activeItalic = false)
+                val linkedSpans = normalizeSpans(
+                    adjustedDoc.spans + InlineStyleSpan(
+                        start = insertStart,
+                        end = insertStart + displayLabel.length,
+                        link = url
+                    ),
+                    newText.length
+                )
+                val finalDoc = adjustedDoc.copy(spans = linkedSpans)
+                doc = finalDoc
+                textFieldValue = TextFieldValue(
+                    text = newText,
+                    selection = TextRange(insertStart + displayLabel.length)
+                )
+                triggerImmediateSave(updatedDoc = finalDoc)
+                showLinkDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+fun FormattingToolbar(
+    currentHeading: HeadingStyle,
+    isBoldActive: Boolean,
+    isItalicActive: Boolean,
+    onSelectHeading: (HeadingStyle) -> Unit,
+    onToggleBold: () -> Unit,
+    onToggleItalic: () -> Unit,
+    onToggleBulletList: () -> Unit,
+    onToggleChecklist: () -> Unit,
+    onOpenLinkDialog: () -> Unit
+) {
+    var styleMenuExpanded by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .widthIn(max = 560.dp)
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { styleMenuExpanded = true }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = currentHeading.label,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = "Choose text style",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            DropdownMenu(
+                expanded = styleMenuExpanded,
+                onDismissRequest = { styleMenuExpanded = false },
+                shape = RoundedCornerShape(12.dp),
+                containerColor = MaterialTheme.colorScheme.surface
+            ) {
+                DropdownMenuItem(
+                    text = { Text(HeadingStyle.TEXT.label, fontSize = 15.sp, fontWeight = FontWeight.Normal) },
+                    onClick = {
+                        styleMenuExpanded = false
+                        onSelectHeading(HeadingStyle.TEXT)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(HeadingStyle.SMALL.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+                    onClick = {
+                        styleMenuExpanded = false
+                        onSelectHeading(HeadingStyle.SMALL)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(HeadingStyle.LARGE.label, fontSize = 20.sp, fontWeight = FontWeight.SemiBold) },
+                    onClick = {
+                        styleMenuExpanded = false
+                        onSelectHeading(HeadingStyle.LARGE)
+                    }
+                )
+            }
+        }
+
+        ToolbarIconButton(Icons.Default.FormatBold, "Bold", isBoldActive, onToggleBold)
+        ToolbarIconButton(Icons.Default.FormatItalic, "Italic", isItalicActive, onToggleItalic)
+        ToolbarIconButton(Icons.AutoMirrored.Filled.FormatListBulleted, "Bulleted list", false, onToggleBulletList)
+        ToolbarIconButton(Icons.Default.CheckBox, "Checklist", false, onToggleChecklist)
+        ToolbarIconButton(Icons.Default.Link, "Insert link", false, onOpenLinkDialog)
+    }
+}
+
+@Composable
+fun ToolbarIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    isActive: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = if (isActive) MaterialTheme.colorScheme.primary else Color.Transparent,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = if (isActive) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun RenameNoteDialog(
+    initialTitle: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var titleText by remember { mutableStateOf(initialTitle) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Rename note", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            OutlinedTextField(
+                value = titleText,
+                onValueChange = { titleText = it },
+                placeholder = { Text("Note title") },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(titleText) }) {
+                Text("Save", fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun DeleteConfirmationDialog(
+    noteTitle: String,
+    onDismiss: () -> Unit,
+    onConfirmDelete: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Delete note?", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Text(
+                text = "“$noteTitle” will be deleted.",
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirmDelete) {
+                Text("Delete", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun InsertLinkDialog(
+    initialLabel: String,
+    onDismiss: () -> Unit,
+    onInsertLink: (label: String, url: String) -> Unit
+) {
+    var label by remember { mutableStateOf(initialLabel) }
+    var url by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Add link", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("Text") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("Link destination") },
+                    placeholder = { Text("https://example.com") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = url.isNotBlank() || label.isNotBlank(),
+                onClick = { onInsertLink(label.trim(), url.trim()) }
+            ) {
+                Text("Insert", fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun SettingsDialog(
+    isDarkTheme: Boolean,
+    onToggleDarkTheme: (Boolean) -> Unit,
+    fontScaleIndex: Int,
+    onSelectFontScale: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Settings", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Dark appearance",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Use a dark writing canvas",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = isDarkTheme, onCheckedChange = onToggleDarkTheme)
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Reading & writing text size",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("Small", "Default", "Large").forEachIndexed { idx, label ->
+                            FilterChip(
+                                selected = fontScaleIndex == idx,
+                                onClick = { onSelectFontScale(idx) },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    )
+}
