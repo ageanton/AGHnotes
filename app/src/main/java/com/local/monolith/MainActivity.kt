@@ -1,101 +1,292 @@
+
 @file:OptIn(
     ExperimentalMaterial3Api::class,
-    ExperimentalFoundationApi::class,
-    ExperimentalLayoutApi::class
+    ExperimentalFoundationApi::class
 )
 
 package com.local.monolith
 
 import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
-import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.min
 
 // ============================================================================
-// DATA MODEL & LOCAL SQLITE VAULT ENGINE
+// DATA MODEL & RICH DOCUMENT SERIALIZATION
 // ============================================================================
+
+enum class HeadingStyle(val label: String) {
+    TEXT("Text"),
+    SMALL("Small heading"),
+    LARGE("Large heading")
+}
+
+data class InlineStyleSpan(
+    val start: Int,
+    val end: Int,
+    val bold: Boolean = false,
+    val italic: Boolean = false,
+    val link: String? = null
+)
+
+data class RichNoteDocument(
+    val text: String = "",
+    val spans: List<InlineStyleSpan> = emptyList(),
+    val lineHeadings: Map<Int, HeadingStyle> = emptyMap()
+) {
+    fun toPlainPreview(): String {
+        return text.lines()
+            .map { line ->
+                line.removePrefix("• ")
+                    .removePrefix("☐ ")
+                    .removePrefix("☑ ")
+                    .trim()
+            }
+            .filter { it.isNotEmpty() }
+            .joinToString(" ")
+    }
+
+    fun serialize(): String {
+        val spansArray = JSONArray()
+        spans.filter { it.end > it.start && (it.bold || it.italic || !it.link.isNullOrBlank()) }
+            .forEach { span ->
+                spansArray.put(
+                    JSONObject().apply {
+                        put("s", span.start)
+                        put("e", span.end)
+                        if (span.bold) put("b", true)
+                        if (span.italic) put("i", true)
+                        if (!span.link.isNullOrBlank()) put("l", span.link)
+                    }
+                )
+            }
+
+        val headingsObj = JSONObject()
+        lineHeadings.forEach { (lineIdx, style) ->
+            if (style != HeadingStyle.TEXT) {
+                headingsObj.put(lineIdx.toString(), style.name)
+            }
+        }
+
+        return JSONObject().apply {
+            put("_format", "rich_v2")
+            put("text", text)
+            put("spans", spansArray)
+            put("headings", headingsObj)
+        }.toString()
+    }
+
+    companion object {
+        fun deserialize(rawContent: String): RichNoteDocument {
+            if (rawContent.isBlank()) return RichNoteDocument()
+
+            if (rawContent.trimStart().startsWith("{")) {
+                try {
+                    val obj = JSONObject(rawContent)
+                    if (obj.optString("_format") == "rich_v2") {
+                        val text = obj.optString("text", "")
+                        val spans = mutableListOf<InlineStyleSpan>()
+                        val spansArray = obj.optJSONArray("spans")
+                        if (spansArray != null) {
+                            for (i in 0 until spansArray.length()) {
+                                val sObj = spansArray.getJSONObject(i)
+                                val start = sObj.optInt("s", 0).coerceIn(0, text.length)
+                                val end = sObj.optInt("e", 0).coerceIn(0, text.length)
+                                if (end > start) {
+                                    spans.add(
+                                        InlineStyleSpan(
+                                            start = start,
+                                            end = end,
+                                            bold = sObj.optBoolean("b", false),
+                                            italic = sObj.optBoolean("i", false),
+                                            link = sObj.optString("l", "").ifBlank { null }
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        val headings = mutableMapOf<Int, HeadingStyle>()
+                        val headingsObj = obj.optJSONObject("headings")
+                        if (headingsObj != null) {
+                            val keys = headingsObj.keys()
+                            while (keys.hasNext()) {
+                                val key = keys.next()
+                                val lineIdx = key.toIntOrNull() ?: continue
+                                val styleName = headingsObj.optString(key)
+                                val style = runCatching { HeadingStyle.valueOf(styleName) }
+                                    .getOrDefault(HeadingStyle.TEXT)
+                                if (style != HeadingStyle.TEXT) {
+                                    headings[lineIdx] = style
+                                }
+                            }
+                        }
+                        return RichNoteDocument(text = text, spans = spans, lineHeadings = headings)
+                    }
+                } catch (_: Exception) {
+                    // Fall through to legacy parser if corrupted JSON
+                }
+            }
+
+            return parseLegacyMarkdown(rawContent)
+        }
+
+        private fun parseLegacyMarkdown(raw: String): RichNoteDocument {
+            val cleanLines = mutableListOf<String>()
+            val headings = mutableMapOf<Int, HeadingStyle>()
+            val spans = mutableListOf<InlineStyleSpan>()
+            var currentOffset = 0
+
+            raw.lines().forEachIndexed { lineIndex, rawLine ->
+                var working = rawLine
+                val trimmed = working.trimStart()
+
+                when {
+                    trimmed.startsWith("# ") -> {
+                        headings[lineIndex] = HeadingStyle.LARGE
+                        working = trimmed.removePrefix("# ")
+                    }
+                    trimmed.startsWith("## ") || trimmed.startsWith("### ") -> {
+                        headings[lineIndex] = HeadingStyle.SMALL
+                        working = trimmed.replaceFirst(Regex("^#{2,3}\\s+"), "")
+                    }
+                    trimmed.startsWith("- [ ] ") -> {
+                        working = "☐ " + trimmed.removePrefix("- [ ] ")
+                    }
+                    trimmed.startsWith("- [x] ") || trimmed.startsWith("- [X] ") -> {
+                        working = "☑ " + trimmed.substring(6)
+                    }
+                    trimmed.startsWith("- ") || trimmed.startsWith("* ") -> {
+                        working = "• " + trimmed.substring(2)
+                    }
+                    trimmed.startsWith("> ") -> {
+                        working = trimmed.removePrefix("> ")
+                    }
+                }
+
+                // Strip [[WikiLinks]] brackets while keeping inner text
+                working = working.replace(Regex("""\[\[([^\[\]]+)\]\]"""), "$1")
+
+                // Convert **bold** into InlineStyleSpan
+                val sb = StringBuilder()
+                var idx = 0
+                while (idx < working.length) {
+                    if (working.startsWith("**", idx)) {
+                        val closeIdx = working.indexOf("**", idx + 2)
+                        if (closeIdx > idx + 2) {
+                            val boldContent = working.substring(idx + 2, closeIdx)
+                            val spanStart = currentOffset + sb.length
+                            sb.append(boldContent)
+                            val spanEnd = currentOffset + sb.length
+                            spans.add(InlineStyleSpan(start = spanStart, end = spanEnd, bold = true))
+                            idx = closeIdx + 2
+                            continue
+                        }
+                    }
+                    sb.append(working[idx])
+                    idx++
+                }
+
+                val finalLine = sb.toString()
+                cleanLines.add(finalLine)
+                currentOffset += finalLine.length + 1
+            }
+
+            return RichNoteDocument(
+                text = cleanLines.joinToString("\n"),
+                spans = spans,
+                lineHeadings = headings
+            )
+        }
+    }
+}
 
 data class Note(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
-    val content: String,
-    val folder: String = "Notes",
-    val tags: List<String> = emptyList(),
-    val colorIndex: Int = 0,
+    val document: RichNoteDocument,
     val isPinned: Boolean = false,
-    val isLocked: Boolean = false,
-    val isTrashed: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
-)
+) {
+    val previewText: String
+        get() = document.toPlainPreview()
+}
 
-class VaultDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vault.db", null, 1) {
+// ============================================================================
+// LOCAL SQLITE DATABASE (BACKWARD-COMPATIBLE WITH EXISTING INSTALLS)
+// ============================================================================
+
+class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vault.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE notes (
+            CREATE TABLE IF NOT EXISTS notes (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -110,271 +301,485 @@ class VaultDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
             )
             """.trimIndent()
         )
-        seedStarterNotes(db)
     }
 
-    private fun seedStarterNotes(db: SQLiteDatabase) {
-        val now = System.currentTimeMillis()
-        val starterNotes = listOf(
-            Note(
-                title = "Welcome to Monolith Vault",
-                content = """
-                    # Your 100% Air-Gapped Knowledge Base
-                    Monolith is engineered for speed, privacy, and zero cloud dependencies.
-                    
-                    ## Try Our Signature Features:
-                    - [x] Zero Internet Permissions (tap the Shield icon above to verify)
-                    - [ ] Tap this checkbox in **Reader Mode** (eye icon) to toggle it!
-                    - [ ] Tap the `[[Zero-Cloud Architecture]]` link at the bottom to jump between linked notes.
-                    - [ ] Start a 25-minute **Focus Sprint** using the timer in the editor top bar.
-                    
-                    Connected thoughts: [[Zero-Cloud Architecture]] and [[Quick Capture Scratchpad]].
-                """.trimIndent(),
-                folder = "Notes",
-                tags = listOf("welcome", "guide"),
-                colorIndex = 1,
-                isPinned = true,
-                createdAt = now - 3600_000,
-                updatedAt = now
-            ),
-            Note(
-                title = "Zero-Cloud Architecture",
-                content = """
-                    # How Your Data Stays Yours
-                    Unlike cloud note apps that sync your private thoughts to remote servers, Monolith operates strictly inside Android's local SQLite sandbox.
-                    
-                    > Tip: Notice at the bottom of this note that **Welcome to Monolith Vault** appears under *Incoming Backlinks* automatically because it links here!
-                    
-                    You can export your entire vault as a single `.json` file anytime from the top menu.
-                """.trimIndent(),
-                folder = "Ideas",
-                tags = listOf("privacy", "architecture"),
-                colorIndex = 2,
-                isPinned = false,
-                createdAt = now - 7200_000,
-                updatedAt = now - 1800_000
-            ),
-            Note(
-                title = "Quick Capture Scratchpad",
-                content = """
-                    # Daily Priorities
-                    - [ ] Test exporting vault backup to phone storage
-                    - [ ] Create a PIN lock for sensitive notes
-                    - [ ] Link a new note using double brackets like [[My Next Big Idea]]
-                """.trimIndent(),
-                folder = "Tasks",
-                tags = listOf("daily", "todo"),
-                colorIndex = 3,
-                isPinned = false,
-                createdAt = now - 10800_000,
-                updatedAt = now - 3600_000
-            )
-        )
-        starterNotes.forEach { insertOrUpdateInternal(db, it) }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        onCreate(db)
+        cleanupLegacyPromotionalNotes(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
-
-    private fun insertOrUpdateInternal(db: SQLiteDatabase, note: Note) {
-        val values = ContentValues().apply {
-            put("id", note.id)
-            put("title", note.title.ifBlank { "Untitled Note" })
-            put("content", note.content)
-            put("folder", note.folder)
-            put("tags", note.tags.joinToString(","))
-            put("color_index", note.colorIndex)
-            put("is_pinned", if (note.isPinned) 1 else 0)
-            put("is_locked", if (note.isLocked) 1 else 0)
-            put("is_trashed", if (note.isTrashed) 1 else 0)
-            put("created_at", note.createdAt)
-            put("updated_at", note.updatedAt)
+    override fun onOpen(db: SQLiteDatabase) {
+        super.onOpen(db)
+        if (!db.isReadOnly) {
+            cleanupLegacyPromotionalNotes(db)
         }
-        db.insertWithOnConflict("notes", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    private fun cleanupLegacyPromotionalNotes(db: SQLiteDatabase) {
+        try {
+            // Remove untouched promotional v1.0 starter notes and unlock any previously locked notes
+            db.execSQL(
+                """
+                DELETE FROM notes 
+                WHERE title IN ('Welcome to Monolith Vault', 'Zero-Cloud Architecture', 'Quick Capture Scratchpad')
+                """.trimIndent()
+            )
+            db.execSQL("UPDATE notes SET is_locked = 0 WHERE is_locked != 0")
+            db.execSQL("DELETE FROM notes WHERE is_trashed = 1")
+        } catch (_: Exception) {
+        }
     }
 
     fun upsertNote(note: Note) {
-        insertOrUpdateInternal(writableDatabase, note)
+        try {
+            val values = ContentValues().apply {
+                put("id", note.id)
+                put("title", note.title)
+                put("content", note.document.serialize())
+                put("folder", "Notes")
+                put("tags", "")
+                put("color_index", 0)
+                put("is_pinned", if (note.isPinned) 1 else 0)
+                put("is_locked", 0)
+                put("is_trashed", 0)
+                put("created_at", note.createdAt)
+                put("updated_at", note.updatedAt)
+            }
+            writableDatabase.insertWithOnConflict("notes", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        } catch (_: Exception) {
+        }
     }
 
-    fun deletePermanently(id: String) {
-        writableDatabase.delete("notes", "id = ?", arrayOf(id))
-    }
-
-    fun emptyTrash() {
-        writableDatabase.delete("notes", "is_trashed = 1", null)
+    fun deleteNote(id: String) {
+        try {
+            writableDatabase.delete("notes", "id = ?", arrayOf(id))
+        } catch (_: Exception) {
+        }
     }
 
     fun getAllNotes(): List<Note> {
         val list = mutableListOf<Note>()
-        val cursor = readableDatabase.query(
-            "notes", null, null, null, null, null,
-            "is_pinned DESC, updated_at DESC"
+        try {
+            val cursor = readableDatabase.query(
+                "notes",
+                null,
+                "is_trashed = 0",
+                null,
+                null,
+                null,
+                "updated_at DESC"
+            )
+            cursor.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(c.getColumnIndexOrThrow("id")) ?: UUID.randomUUID().toString()
+                    val title = c.getString(c.getColumnIndexOrThrow("title")) ?: ""
+                    val rawContent = c.getString(c.getColumnIndexOrThrow("content")) ?: ""
+                    val isPinned = c.getInt(c.getColumnIndexOrThrow("is_pinned")) == 1
+                    val createdAt = c.getLong(c.getColumnIndexOrThrow("created_at"))
+                    val updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at"))
+
+                    list.add(
+                        Note(
+                            id = id,
+                            title = if (title == "Untitled Note") "" else title,
+                            document = RichNoteDocument.deserialize(rawContent),
+                            isPinned = isPinned,
+                            createdAt = createdAt,
+                            updatedAt = updatedAt
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return list.sortedByDescending { it.updatedAt }
+    }
+}
+
+// ============================================================================
+// FORMATTING ENGINE & WYSIWYG VISUAL TRANSFORMATION
+// ============================================================================
+
+fun adjustDocumentOnEdit(
+    oldDoc: RichNoteDocument,
+    newText: String,
+    activeBold: Boolean,
+    activeItalic: Boolean
+): RichNoteDocument {
+    val oldText = oldDoc.text
+    if (oldText == newText) return oldDoc
+
+    var prefix = 0
+    val minLen = min(oldText.length, newText.length)
+    while (prefix < minLen && oldText[prefix] == newText[prefix]) {
+        prefix++
+    }
+
+    var oldSuffix = oldText.length
+    var newSuffix = newText.length
+    while (oldSuffix > prefix && newSuffix > prefix && oldText[oldSuffix - 1] == newText[newSuffix - 1]) {
+        oldSuffix--
+        newSuffix--
+    }
+
+    val delta = newText.length - oldText.length
+    val insertedCount = newSuffix - prefix
+
+    // 1. Shift or expand inline spans
+    val updatedSpans = mutableListOf<InlineStyleSpan>()
+    for (span in oldDoc.spans) {
+        val newStart = when {
+            span.start <= prefix -> span.start
+            span.start >= oldSuffix -> (span.start + delta).coerceAtLeast(prefix)
+            else -> prefix
+        }
+        val newEnd = when {
+            span.end <= prefix -> span.end
+            span.end >= oldSuffix -> (span.end + delta).coerceAtLeast(prefix)
+            else -> prefix
+        }
+        if (newEnd > newStart) {
+            updatedSpans.add(span.copy(start = newStart, end = newEnd))
+        }
+    }
+
+    if (insertedCount > 0 && (activeBold || activeItalic)) {
+        updatedSpans.add(
+            InlineStyleSpan(
+                start = prefix,
+                end = newSuffix,
+                bold = activeBold,
+                italic = activeItalic
+            )
         )
-        cursor.use { c ->
-            while (c.moveToNext()) {
-                val rawTags = c.getString(c.getColumnIndexOrThrow("tags"))
-                list.add(
-                    Note(
-                        id = c.getString(c.getColumnIndexOrThrow("id")),
-                        title = c.getString(c.getColumnIndexOrThrow("title")),
-                        content = c.getString(c.getColumnIndexOrThrow("content")),
-                        folder = c.getString(c.getColumnIndexOrThrow("folder")),
-                        tags = if (rawTags.isBlank()) emptyList() else rawTags.split(",").map { it.trim() }.filter { it.isNotEmpty() },
-                        colorIndex = c.getInt(c.getColumnIndexOrThrow("color_index")),
-                        isPinned = c.getInt(c.getColumnIndexOrThrow("is_pinned")) == 1,
-                        isLocked = c.getInt(c.getColumnIndexOrThrow("is_locked")) == 1,
-                        isTrashed = c.getInt(c.getColumnIndexOrThrow("is_trashed")) == 1,
-                        createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),
-                        updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at"))
+    }
+
+    // 2. Shift line heading styles if newlines were inserted or deleted
+    val oldRemovedSegment = oldText.substring(prefix, oldSuffix)
+    val newInsertedSegment = newText.substring(prefix, newSuffix)
+    val removedNewlines = oldRemovedSegment.count { it == '\n' }
+    val addedNewlines = newInsertedSegment.count { it == '\n' }
+    val lineDelta = addedNewlines - removedNewlines
+
+    val updatedHeadings = if (lineDelta == 0) {
+        oldDoc.lineHeadings
+    } else {
+        val editLineIndex = oldText.substring(0, prefix).count { it == '\n' }
+        val map = mutableMapOf<Int, HeadingStyle>()
+        oldDoc.lineHeadings.forEach { (lineIdx, style) ->
+            when {
+                lineIdx < editLineIndex -> map[lineIdx] = style
+                lineIdx == editLineIndex -> {
+                    // If Enter was pressed at the very start of a heading line, push the heading down
+                    val lineStartOffset = oldText.lastIndexOf('\n', (prefix - 1).coerceAtLeast(0))
+                        .let { if (it == -1) 0 else it + 1 }
+                    if (addedNewlines > 0 && prefix == lineStartOffset) {
+                        map[lineIdx + lineDelta] = style
+                    } else {
+                        map[lineIdx] = style
+                    }
+                }
+                else -> {
+                    val shifted = lineIdx + lineDelta
+                    if (shifted >= 0) map[shifted] = style
+                }
+            }
+        }
+        map
+    }
+
+    return RichNoteDocument(
+        text = newText,
+        spans = normalizeSpans(updatedSpans, newText.length),
+        lineHeadings = updatedHeadings
+    )
+}
+
+fun normalizeSpans(spans: List<InlineStyleSpan>, textLength: Int): List<InlineStyleSpan> {
+    if (spans.isEmpty() || textLength == 0) return emptyList()
+    val clamped = spans.mapNotNull { s ->
+        val start = s.start.coerceIn(0, textLength)
+        val end = s.end.coerceIn(0, textLength)
+        if (end > start && (s.bold || s.italic || !s.link.isNullOrBlank())) {
+            s.copy(start = start, end = end)
+        } else null
+    }
+    if (clamped.isEmpty()) return emptyList()
+
+    val points = clamped.flatMap { listOf(it.start, it.end) }.distinct().sorted()
+    val merged = mutableListOf<InlineStyleSpan>()
+
+    for (i in 0 until points.size - 1) {
+        val segStart = points[i]
+        val segEnd = points[i + 1]
+        if (segEnd <= segStart) continue
+
+        val covering = clamped.filter { it.start <= segStart && it.end >= segEnd }
+        if (covering.isNotEmpty()) {
+            val bold = covering.any { it.bold }
+            val italic = covering.any { it.italic }
+            val link = covering.lastOrNull { !it.link.isNullOrBlank() }?.link
+            if (bold || italic || link != null) {
+                val prev = merged.lastOrNull()
+                if (prev != null && prev.end == segStart && prev.bold == bold && prev.italic == italic && prev.link == link) {
+                    merged[merged.lastIndex] = prev.copy(end = segEnd)
+                } else {
+                    merged.add(InlineStyleSpan(segStart, segEnd, bold, italic, link))
+                }
+            }
+        }
+    }
+    return merged
+}
+
+fun toggleSelectionInlineStyle(
+    doc: RichNoteDocument,
+    selection: TextRange,
+    toggleBold: Boolean = false,
+    toggleItalic: Boolean = false
+): RichNoteDocument {
+    val start = selection.min.coerceIn(0, doc.text.length)
+    val end = selection.max.coerceIn(0, doc.text.length)
+    if (end <= start) return doc
+
+    val currentlyAllBold = doc.spans.any { it.start <= start && it.end >= end && it.bold }
+    val currentlyAllItalic = doc.spans.any { it.start <= start && it.end >= end && it.italic }
+
+    val result = mutableListOf<InlineStyleSpan>()
+    for (span in doc.spans) {
+        if (span.end <= start || span.start >= end) {
+            result.add(span)
+        } else {
+            if (span.start < start) {
+                result.add(span.copy(end = start))
+            }
+            if (span.end > end) {
+                result.add(span.copy(start = end))
+            }
+            val overlapStart = max(span.start, start)
+            val overlapEnd = min(span.end, end)
+            val newBold = if (toggleBold) !currentlyAllBold else span.bold
+            val newItalic = if (toggleItalic) !currentlyAllItalic else span.italic
+            if (newBold || newItalic || span.link != null) {
+                result.add(
+                    span.copy(
+                        start = overlapStart,
+                        end = overlapEnd,
+                        bold = newBold,
+                        italic = newItalic
                     )
                 )
             }
         }
-        return list
     }
 
-    fun exportVaultJson(): String {
-        val array = JSONArray()
-        getAllNotes().forEach { note ->
-            val obj = JSONObject().apply {
-                put("id", note.id)
-                put("title", note.title)
-                put("content", note.content)
-                put("folder", note.folder)
-                put("tags", JSONArray(note.tags))
-                put("colorIndex", note.colorIndex)
-                put("isPinned", note.isPinned)
-                put("isLocked", note.isLocked)
-                put("isTrashed", note.isTrashed)
-                put("createdAt", note.createdAt)
-                put("updatedAt", note.updatedAt)
-            }
-            array.put(obj)
-        }
-        return JSONObject().apply {
-            put("app", "MonolithVault")
-            put("version", 1)
-            put("exportedAt", System.currentTimeMillis())
-            put("notes", array)
-        }.toString(2)
+    if (toggleBold && !currentlyAllBold) {
+        result.add(InlineStyleSpan(start, end, bold = true))
+    }
+    if (toggleItalic && !currentlyAllItalic) {
+        result.add(InlineStyleSpan(start, end, italic = true))
     }
 
-    fun importVaultJson(jsonString: String): Int {
-        val root = JSONObject(jsonString)
-        val notesArray = root.getJSONArray("notes")
-        var count = 0
-        val db = writableDatabase
-        db.beginTransaction()
-        try {
-            for (i in 0 until notesArray.length()) {
-                val obj = notesArray.getJSONObject(i)
-                val tagsJson = obj.optJSONArray("tags")
-                val tags = mutableListOf<String>()
-                if (tagsJson != null) {
-                    for (t in 0 until tagsJson.length()) {
-                        tags.add(tagsJson.getString(t))
+    return doc.copy(spans = normalizeSpans(result, doc.text.length))
+}
+
+class WysiwygVisualTransformation(
+    private val doc: RichNoteDocument,
+    private val baseFontSizeSp: Float,
+    private val accentColor: Color,
+    private val mutedColor: Color
+) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val raw = text.text
+        val styled = buildAnnotatedString {
+            append(raw)
+
+            // 1. Apply line-level headings, bullets, and checklist styles
+            var lineStart = 0
+            var lineIdx = 0
+            val lines = raw.split('\n')
+            for (line in lines) {
+                val lineEnd = lineStart + line.length
+                if (lineEnd > lineStart) {
+                    when (doc.lineHeadings[lineIdx] ?: HeadingStyle.TEXT) {
+                        HeadingStyle.LARGE -> {
+                            addStyle(
+                                SpanStyle(
+                                    fontSize = (baseFontSizeSp + 7f).sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = (-0.3).sp
+                                ),
+                                lineStart,
+                                lineEnd
+                            )
+                        }
+                        HeadingStyle.SMALL -> {
+                            addStyle(
+                                SpanStyle(
+                                    fontSize = (baseFontSizeSp + 3f).sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = (-0.15).sp
+                                ),
+                                lineStart,
+                                lineEnd
+                            )
+                        }
+                        HeadingStyle.TEXT -> {}
+                    }
+
+                    when {
+                        line.startsWith("• ") -> {
+                            addStyle(
+                                SpanStyle(
+                                    color = accentColor,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                lineStart,
+                                (lineStart + 2).coerceAtMost(lineEnd)
+                            )
+                        }
+                        line.startsWith("☐ ") -> {
+                            addStyle(
+                                SpanStyle(
+                                    color = mutedColor,
+                                    fontSize = (baseFontSizeSp + 2f).sp
+                                ),
+                                lineStart,
+                                (lineStart + 2).coerceAtMost(lineEnd)
+                            )
+                        }
+                        line.startsWith("☑ ") -> {
+                            addStyle(
+                                SpanStyle(
+                                    color = accentColor,
+                                    fontSize = (baseFontSizeSp + 2f).sp
+                                ),
+                                lineStart,
+                                (lineStart + 2).coerceAtMost(lineEnd)
+                            )
+                            if (lineEnd > lineStart + 2) {
+                                addStyle(
+                                    SpanStyle(
+                                        color = mutedColor,
+                                        textDecoration = TextDecoration.LineThrough
+                                    ),
+                                    lineStart + 2,
+                                    lineEnd
+                                )
+                            }
+                        }
                     }
                 }
-                val note = Note(
-                    id = obj.optString("id", UUID.randomUUID().toString()),
-                    title = obj.optString("title", "Imported Note"),
-                    content = obj.optString("content", ""),
-                    folder = obj.optString("folder", "Notes"),
-                    tags = tags,
-                    colorIndex = obj.optInt("colorIndex", 0),
-                    isPinned = obj.optBoolean("isPinned", false),
-                    isLocked = obj.optBoolean("isLocked", false),
-                    isTrashed = obj.optBoolean("isTrashed", false),
-                    createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-                    updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
-                )
-                insertOrUpdateInternal(db, note)
-                count++
+                lineStart = lineEnd + 1
+                lineIdx++
             }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
+
+            // 2. Apply inline Bold, Italic, and Link spans
+            for (span in doc.spans) {
+                val s = span.start.coerceIn(0, raw.length)
+                val e = span.end.coerceIn(0, raw.length)
+                if (e > s) {
+                    if (span.bold) {
+                        addStyle(SpanStyle(fontWeight = FontWeight.Bold), s, e)
+                    }
+                    if (span.italic) {
+                        addStyle(SpanStyle(fontStyle = FontStyle.Italic), s, e)
+                    }
+                    if (!span.link.isNullOrBlank()) {
+                        addStyle(
+                            SpanStyle(
+                                color = accentColor,
+                                textDecoration = TextDecoration.Underline
+                            ),
+                            s,
+                            e
+                        )
+                    }
+                }
+            }
         }
-        return count
+        return TransformedText(styled, OffsetMapping.Identity)
     }
 }
 
 // ============================================================================
-// THEME PALETTE & HELPERS
+// DATE FORMATTING HELPER
 // ============================================================================
 
-val DarkNoteColors = listOf(
-    Color(0xFF1C1D24), // Default Obsidian
-    Color(0xFF2B2418), // Warm Gold Amber
-    Color(0xFF192724), // Deep Emerald
-    Color(0xFF1A2332), // Midnight Sapphire
-    Color(0xFF2B1C28), // Mulberry Plum
-    Color(0xFF2A1E1E)  // Rust Crimson
-)
+fun formatRelativeDate(millis: Long): String {
+    val now = System.currentTimeMillis()
+    val diff = now - millis
+    val calNow = Calendar.getInstance()
+    val calNote = Calendar.getInstance().apply { timeInMillis = millis }
 
-val LightNoteColors = listOf(
-    Color(0xFFF6F6F9), // Default Paper
-    Color(0xFFFFF8E1), // Soft Amber
-    Color(0xFFE8F5E9), // Mint Leaf
-    Color(0xFFE3F2FD), // Sky Mist
-    Color(0xFFF3E5F5), // Lavender
-    Color(0xFFFFEBEE)  // Rose Quartz
-)
-
-val StandardFolders = listOf("All", "Pinned", "Notes", "Ideas", "Journal", "Tasks", "Locked", "Trash")
-
-fun hashPin(pin: String): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    return digest.digest(("monolith_salt_" + pin).toByteArray())
-        .joinToString("") { "%02x".format(it) }
-}
-
-fun extractWikiLinks(text: String): List<String> {
-    val regex = Regex("""\[\[([^\[\]]+)\]\]""")
-    return regex.findAll(text)
-        .map { it.groupValues[1].trim() }
-        .filter { it.isNotEmpty() }
-        .distinct()
-        .toList()
-}
-
-fun formatTimestamp(millis: Long): String {
-    val sdf = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
-    return sdf.format(Date(millis))
+    return when {
+        diff < 60_000L -> "Just now"
+        calNow.get(Calendar.YEAR) == calNote.get(Calendar.YEAR) &&
+            calNow.get(Calendar.DAY_OF_YEAR) == calNote.get(Calendar.DAY_OF_YEAR) -> {
+            SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
+        }
+        calNow.get(Calendar.YEAR) == calNote.get(Calendar.YEAR) &&
+            calNow.get(Calendar.DAY_OF_YEAR) - calNote.get(Calendar.DAY_OF_YEAR) == 1 -> {
+            "Yesterday"
+        }
+        calNow.get(Calendar.YEAR) == calNote.get(Calendar.YEAR) -> {
+            SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(millis))
+        }
+        else -> {
+            SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(millis))
+        }
+    }
 }
 
 // ============================================================================
-// MAIN ACTIVITY
+// MAIN ACTIVITY & THEME
 // ============================================================================
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val db = VaultDatabase(applicationContext)
-        val prefs = getSharedPreferences("monolith_prefs", Context.MODE_PRIVATE)
+        val db = NotesDatabase(applicationContext)
+        val prefs = getSharedPreferences("notes_settings", Context.MODE_PRIVATE)
 
         setContent {
-            var isDarkTheme by remember { mutableStateOf(prefs.getBoolean("dark_mode", true)) }
+            var isDarkTheme by remember { mutableStateOf(prefs.getBoolean("dark_mode", false)) }
+            var fontScaleIndex by remember { mutableStateOf(prefs.getInt("font_scale", 1)) } // 0=Small, 1=Default, 2=Large
 
             val colorScheme = if (isDarkTheme) {
                 darkColorScheme(
-                    primary = Color(0xFFD4AF37),
-                    onPrimary = Color(0xFF121318),
-                    secondary = Color(0xFF8AB4F8),
-                    background = Color(0xFF0F1015),
-                    surface = Color(0xFF181A20),
-                    surfaceVariant = Color(0xFF22252E)
+                    primary = Color(0xFFE6E1D6),
+                    onPrimary = Color(0xFF141413),
+                    secondary = Color(0xFFA8A29E),
+                    background = Color(0xFF141413),
+                    surface = Color(0xFF1C1C1A),
+                    surfaceVariant = Color(0xFF262624),
+                    onBackground = Color(0xFFECEAE4),
+                    onSurface = Color(0xFFECEAE4),
+                    onSurfaceVariant = Color(0xFF9C9891),
+                    outline = Color(0xFF2E2E2B),
+                    error = Color(0xFFF28B82)
                 )
             } else {
                 lightColorScheme(
-                    primary = Color(0xFF8D6E11),
-                    onPrimary = Color.White,
-                    secondary = Color(0xFF1967D2),
-                    background = Color(0xFFFAFAFC),
-                    surface = Color.White,
-                    surfaceVariant = Color(0xFFEDEEF2)
+                    primary = Color(0xFF1F1F1D),
+                    onPrimary = Color(0xFFFFFFFF),
+                    secondary = Color(0xFF57534E),
+                    background = Color(0xFFFAF9F5),
+                    surface = Color(0xFFFFFFFF),
+                    surfaceVariant = Color(0xFFF1EFEA),
+                    onBackground = Color(0xFF191918),
+                    onSurface = Color(0xFF191918),
+                    onSurfaceVariant = Color(0xFF78756F),
+                    outline = Color(0xFFE6E4DD),
+                    error = Color(0xFFD93025)
                 )
+            }
+
+            val baseFontSizeSp = when (fontScaleIndex) {
+                0 -> 15f
+                2 -> 18f
+                else -> 16.5f
             }
 
             MaterialTheme(colorScheme = colorScheme) {
@@ -382,17 +787,19 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MonolithApp(
+                    NotesApp(
                         db = db,
                         isDarkTheme = isDarkTheme,
-                        onToggleTheme = {
-                            isDarkTheme = !isDarkTheme
-                            prefs.edit().putBoolean("dark_mode", isDarkTheme).apply()
+                        onToggleDarkTheme = { enabled ->
+                            isDarkTheme = enabled
+                            prefs.edit().putBoolean("dark_mode", enabled).apply()
                         },
-                        savedPinHash = prefs.getString("pin_hash", null),
-                        onSavePinHash = { newHash ->
-                            prefs.edit().putString("pin_hash", newHash).apply()
-                        }
+                        fontScaleIndex = fontScaleIndex,
+                        onSelectFontScale = { scale ->
+                            fontScaleIndex = scale
+                            prefs.edit().putInt("font_scale", scale).apply()
+                        },
+                        baseFontSizeSp = baseFontSizeSp
                     )
                 }
             }
@@ -401,1163 +808,423 @@ class MainActivity : ComponentActivity() {
 }
 
 // ============================================================================
-// ROOT COMPOSABLE & NAVIGATION
+// ROOT APP COORDINATOR
 // ============================================================================
 
 @Composable
-fun MonolithApp(
-    db: VaultDatabase,
+fun NotesApp(
+    db: NotesDatabase,
     isDarkTheme: Boolean,
-    onToggleTheme: () -> Unit,
-    savedPinHash: String?,
-    onSavePinHash: (String) -> Unit
+    onToggleDarkTheme: (Boolean) -> Unit,
+    fontScaleIndex: Int,
+    onSelectFontScale: (Int) -> Unit,
+    baseFontSizeSp: Float
 ) {
-    val context = LocalContext.current
-    var notes by remember { mutableStateOf(db.getAllNotes()) }
-    var activeNote by remember { mutableStateOf<Note?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedFolder by remember { mutableStateOf("All") }
-    var selectedTag by remember { mutableStateOf<String?>(null) }
-    var isGridView by remember { mutableStateOf(true) }
-    var unlockedSession by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    // Dialog states
-    var showSecurityAudit by remember { mutableStateOf(false) }
-    var showPinDialogForNote by remember { mutableStateOf<Note?>(null) }
-    var showPinDialogForFolder by remember { mutableStateOf(false) }
-    var showSetupPinDialog by remember { mutableStateOf(false) }
-    var currentPinHash by remember { mutableStateOf(savedPinHash) }
+    var notes by remember { mutableStateOf(db.getAllNotes()) }
+    var activeNoteId by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    // Modal states
+    var noteToRename by remember { mutableStateOf<Note?>(null) }
+    var noteToDelete by remember { mutableStateOf<Note?>(null) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
 
     fun refreshNotes() {
         notes = db.getAllNotes()
     }
 
-    // Export Vault Launcher (.json)
-    val exportVaultLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
-    ) { uri: Uri? ->
-        uri?.let {
-            try {
-                context.contentResolver.openOutputStream(it)?.use { out ->
-                    out.write(db.exportVaultJson().toByteArray())
-                }
-                Toast.makeText(context, "Vault exported offline successfully!", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+    fun handleDeleteWithUndo(target: Note) {
+        db.deleteNote(target.id)
+        if (activeNoteId == target.id) {
+            activeNoteId = null
+        }
+        refreshNotes()
+        scope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            val result = snackbarHostState.showSnackbar(
+                message = "Note deleted",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Short
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                db.upsertNote(target)
+                refreshNotes()
             }
         }
     }
 
-    // Import Vault Launcher (.json)
-    val importVaultLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        uri?.let {
-            try {
-                val content = context.contentResolver.openInputStream(it)?.use { input ->
-                    BufferedReader(InputStreamReader(input)).readText()
-                } ?: ""
-                val importedCount = db.importVaultJson(content)
-                refreshNotes()
-                Toast.makeText(context, "Imported $importedCount notes into Vault!", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(context, "Invalid Vault JSON: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    if (activeNote != null) {
-        NoteEditorScreen(
-            note = activeNote!!,
-            allNotes = notes.filter { !it.isTrashed },
-            isDarkTheme = isDarkTheme,
-            onSave = { updated ->
-                db.upsertNote(updated)
-                refreshNotes()
-                activeNote = updated
-            },
-            onClose = {
-                refreshNotes()
-                activeNote = null
-            },
-            onOpenOrCreateLinkedNote = { targetTitle ->
-                val existing = notes.firstOrNull {
-                    !it.isTrashed && it.title.equals(targetTitle, ignoreCase = true)
-                }
-                if (existing != null) {
-                    if (existing.isLocked && !unlockedSession) {
-                        showPinDialogForNote = existing
-                    } else {
-                        activeNote = existing
-                    }
-                } else {
-                    val created = Note(
-                        title = targetTitle,
-                        content = "# $targetTitle\n\nLinked from [[${activeNote!!.title}]]\n\n",
-                        folder = activeNote!!.folder
-                    )
-                    db.upsertNote(created)
-                    refreshNotes()
-                    activeNote = created
-                }
-            },
-            onRequestLockToggle = { current ->
-                if (currentPinHash == null) {
-                    showSetupPinDialog = true
-                } else {
-                    val updated = current.copy(
-                        isLocked = !current.isLocked,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                    db.upsertNote(updated)
-                    refreshNotes()
-                    activeNote = updated
-                }
-            },
-            onMoveToTrash = { current ->
-                db.upsertNote(current.copy(isTrashed = true, isPinned = false, updatedAt = System.currentTimeMillis()))
-                refreshNotes()
-                activeNote = null
-            },
-            onRestoreFromTrash = { current ->
-                db.upsertNote(current.copy(isTrashed = false, updatedAt = System.currentTimeMillis()))
-                refreshNotes()
-                activeNote = null
-            },
-            onDeleteForever = { current ->
-                db.deletePermanently(current.id)
-                refreshNotes()
-                activeNote = null
-            }
-        )
-    } else {
-        VaultHomeScreen(
-            notes = notes,
-            searchQuery = searchQuery,
-            onSearchChange = { searchQuery = it },
-            selectedFolder = selectedFolder,
-            onSelectFolder = { folder ->
-                if (folder == "Locked" && !unlockedSession) {
-                    if (currentPinHash == null) {
-                        showSetupPinDialog = true
-                    } else {
-                        showPinDialogForFolder = true
-                    }
-                } else {
-                    selectedFolder = folder
-                }
-            },
-            selectedTag = selectedTag,
-            onSelectTag = { selectedTag = if (selectedTag == it) null else it },
-            isGridView = isGridView,
-            onToggleGrid = { isGridView = !isGridView },
-            isDarkTheme = isDarkTheme,
-            onToggleTheme = onToggleTheme,
-            unlockedSession = unlockedSession,
-            onOpenNote = { note ->
-                if (note.isLocked && !unlockedSession) {
-                    if (currentPinHash == null) {
-                        showSetupPinDialog = true
-                    } else {
-                        showPinDialogForNote = note
-                    }
-                } else {
-                    activeNote = note
-                }
-            },
-            onCreateNote = {
-                val defaultFolder = if (selectedFolder in listOf("All", "Pinned", "Trash", "Locked")) "Notes" else selectedFolder
-                val fresh = Note(
-                    title = "",
-                    content = "",
-                    folder = defaultFolder,
-                    isLocked = selectedFolder == "Locked"
-                )
-                db.upsertNote(fresh)
-                refreshNotes()
-                activeNote = fresh
-            },
-            onTogglePin = { note ->
-                db.upsertNote(note.copy(isPinned = !note.isPinned, updatedAt = System.currentTimeMillis()))
-                refreshNotes()
-            },
-            onEmptyTrash = {
-                db.emptyTrash()
-                refreshNotes()
-            },
-            onExportVault = {
-                val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
-                exportVaultLauncher.launch("Monolith_Vault_$dateStr.json")
-            },
-            onImportVault = {
-                importVaultLauncher.launch(arrayOf("application/json", "*/*"))
-            },
-            onShowSecurityAudit = { showSecurityAudit = true },
-            onSetupOrChangePin = { showSetupPinDialog = true }
-        )
-    }
-
-    // Security Audit Dialog
-    if (showSecurityAudit) {
-        AirGapSecurityDialog(onDismiss = { showSecurityAudit = false })
-    }
-
-    // Setup PIN Dialog
-    if (showSetupPinDialog) {
-        SetupPinDialog(
-            onDismiss = { showSetupPinDialog = false },
-            onPinCreated = { rawPin ->
-                val hashed = hashPin(rawPin)
-                currentPinHash = hashed
-                onSavePinHash(hashed)
-                unlockedSession = true
-                showSetupPinDialog = false
-                Toast.makeText(context, "Vault PIN configured!", Toast.LENGTH_SHORT).show()
-            }
-        )
-    }
-
-    // Verify PIN Dialog (for a locked note or Locked folder)
-    if (showPinDialogForNote != null || showPinDialogForFolder) {
-        VerifyPinDialog(
-            expectedHash = currentPinHash ?: "",
-            onDismiss = {
-                showPinDialogForNote = null
-                showPinDialogForFolder = false
-            },
-            onUnlocked = {
-                unlockedSession = true
-                if (showPinDialogForFolder) {
-                    selectedFolder = "Locked"
-                }
-                showPinDialogForNote?.let { activeNote = it }
-                showPinDialogForNote = null
-                showPinDialogForFolder = false
-            }
-        )
-    }
-}
-
-// ============================================================================
-// HOME SCREEN
-// ============================================================================
-
-@Composable
-fun VaultHomeScreen(
-    notes: List<Note>,
-    searchQuery: String,
-    onSearchChange: (String) -> Unit,
-    selectedFolder: String,
-    onSelectFolder: (String) -> Unit,
-    selectedTag: String?,
-    onSelectTag: (String) -> Unit,
-    isGridView: Boolean,
-    onToggleGrid: () -> Unit,
-    isDarkTheme: Boolean,
-    onToggleTheme: () -> Unit,
-    unlockedSession: Boolean,
-    onOpenNote: (Note) -> Unit,
-    onCreateNote: () -> Unit,
-    onTogglePin: (Note) -> Unit,
-    onEmptyTrash: () -> Unit,
-    onExportVault: () -> Unit,
-    onImportVault: () -> Unit,
-    onShowSecurityAudit: () -> Unit,
-    onSetupOrChangePin: () -> Unit
-) {
-    var showMenu by remember { mutableStateOf(false) }
-
-    val allTags = remember(notes) {
-        notes.filter { !it.isTrashed }
-            .flatMap { it.tags }
-            .distinct()
-            .sorted()
-    }
-
-    val filteredNotes = remember(notes, searchQuery, selectedFolder, selectedTag) {
-        notes.filter { note ->
-            val matchesTrash = if (selectedFolder == "Trash") note.isTrashed else !note.isTrashed
-            val matchesFolder = when (selectedFolder) {
-                "All" -> !note.isTrashed
-                "Pinned" -> note.isPinned && !note.isTrashed
-                "Locked" -> note.isLocked && !note.isTrashed
-                "Trash" -> note.isTrashed
-                else -> note.folder.equals(selectedFolder, ignoreCase = true) && !note.isTrashed
-            }
-            val matchesTag = selectedTag == null || note.tags.contains(selectedTag)
-            val q = searchQuery.trim().lowercase()
-            val matchesQuery = q.isEmpty() ||
-                note.title.lowercase().contains(q) ||
-                (!note.isLocked && note.content.lowercase().contains(q)) ||
-                note.tags.any { it.lowercase().contains(q) }
-
-            matchesTrash && matchesFolder && matchesTag && matchesQuery
-        }
+    val activeNote = remember(notes, activeNoteId) {
+        activeNoteId?.let { id -> notes.firstOrNull { it.id == id } }
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "MONOLITH",
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 2.sp,
-                            fontSize = 20.sp
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.clickable { onShowSecurityAudit() }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Security,
-                                    contentDescription = "Offline Verified",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    text = "AIR-GAPPED",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onToggleGrid) {
-                        Icon(
-                            imageVector = if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
-                            contentDescription = "Toggle Layout"
-                        )
-                    }
-                    IconButton(onClick = onToggleTheme) {
-                        Icon(
-                            imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                            contentDescription = "Toggle Theme"
-                        )
-                    }
-                    Box {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Vault Menu")
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Export Vault Backup (.json)") },
-                                leadingIcon = { Icon(Icons.Default.FileUpload, null) },
-                                onClick = {
-                                    showMenu = false
-                                    onExportVault()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Import Vault Backup (.json)") },
-                                leadingIcon = { Icon(Icons.Default.FileDownload, null) },
-                                onClick = {
-                                    showMenu = false
-                                    onImportVault()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Configure Vault PIN Lock") },
-                                leadingIcon = { Icon(Icons.Default.Lock, null) },
-                                onClick = {
-                                    showMenu = false
-                                    onSetupOrChangePin()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Air-Gapped Security Audit") },
-                                leadingIcon = { Icon(Icons.Default.Security, null) },
-                                onClick = {
-                                    showMenu = false
-                                    onShowSecurityAudit()
-                                }
-                            )
-                        }
-                    }
-                }
-            )
-        },
-        floatingActionButton = {
-            if (selectedFolder != "Trash") {
-                ExtendedFloatingActionButton(
-                    onClick = onCreateNote,
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    icon = { Icon(Icons.Default.Add, contentDescription = "New Note") },
-                    text = { Text("New Note", fontWeight = FontWeight.Bold) }
+        snackbarHost = {
+            SnackbarHost(hostState = snackbarHostState) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    shape = RoundedCornerShape(10.dp),
+                    containerColor = MaterialTheme.colorScheme.onBackground,
+                    contentColor = MaterialTheme.colorScheme.background,
+                    actionColor = MaterialTheme.colorScheme.background
                 )
             }
-        }
-    ) { innerPadding ->
-        Column(
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { rootPadding ->
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(rootPadding)
         ) {
-            // Search Bar
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                placeholder = { Text("Search titles, markdown, or #tags...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchChange("") }) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear")
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp)
-            )
-
-            // Folder Tabs
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                StandardFolders.forEach { folder ->
-                    val selected = selectedFolder == folder
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectFolder(folder) },
-                        label = { Text(folder) },
-                        leadingIcon = when (folder) {
-                            "Pinned" -> {
-                                { Icon(Icons.Default.PushPin, null, Modifier.size(16.dp)) }
-                            }
-                            "Locked" -> {
-                                { Icon(Icons.Default.Lock, null, Modifier.size(16.dp)) }
-                            }
-                            "Trash" -> {
-                                { Icon(Icons.Default.Delete, null, Modifier.size(16.dp)) }
-                            }
-                            else -> null
-                        }
-                    )
-                }
-            }
-
-            // Tag Filter Bar
-            if (allTags.isNotEmpty() && selectedFolder != "Trash") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    allTags.forEach { tag ->
-                        val isSelected = selectedTag == tag
-                        AssistChip(
-                            onClick = { onSelectTag(tag) },
-                            label = { Text("#$tag", fontSize = 12.sp) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = if (isSelected)
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                                else Color.Transparent
-                            )
+            if (activeNote != null) {
+                NoteEditorScreen(
+                    note = activeNote,
+                    baseFontSizeSp = baseFontSizeSp,
+                    onAutoSave = { updated ->
+                        db.upsertNote(updated)
+                        refreshNotes()
+                    },
+                    onBack = {
+                        refreshNotes()
+                        activeNoteId = null
+                    },
+                    onTogglePin = { current ->
+                        val updated = current.copy(
+                            isPinned = !current.isPinned,
+                            updatedAt = System.currentTimeMillis()
                         )
+                        db.upsertNote(updated)
+                        refreshNotes()
+                    },
+                    onRequestRename = { current ->
+                        noteToRename = current
+                    },
+                    onRequestDelete = { current ->
+                        noteToDelete = current
                     }
-                }
-            }
-
-            // Trash Banner
-            if (selectedFolder == "Trash" && filteredNotes.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "${filteredNotes.size} note(s) in Trash",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    TextButton(onClick = onEmptyTrash) {
-                        Text("Empty Trash Forever", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
-
-            // Notes Grid / List
-            if (filteredNotes.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = null,
-                            modifier = Modifier.size(48.dp),
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            text = if (searchQuery.isNotBlank()) "No matching notes found"
-                            else "No notes in $selectedFolder yet",
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                        )
-                    }
-                }
-            } else if (isGridView) {
-                LazyVerticalStaggeredGrid(
-                    columns = StaggeredGridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 96.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalItemSpacing = 10.dp
-                ) {
-                    items(filteredNotes, key = { it.id }) { note ->
-                        NoteCard(
-                            note = note,
-                            isDarkTheme = isDarkTheme,
-                            unlockedSession = unlockedSession,
-                            onClick = { onOpenNote(note) },
-                            onLongClick = { onTogglePin(note) }
-                        )
-                    }
-                }
+                )
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    items(filteredNotes, key = { it.id }) { note ->
-                        NoteCard(
-                            note = note,
-                            isDarkTheme = isDarkTheme,
-                            unlockedSession = unlockedSession,
-                            onClick = { onOpenNote(note) },
-                            onLongClick = { onTogglePin(note) }
+                NotesHomeScreen(
+                    notes = notes,
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = { searchQuery = it },
+                    onOpenNote = { note -> activeNoteId = note.id },
+                    onCreateNote = {
+                        val fresh = Note(
+                            title = "",
+                            document = RichNoteDocument()
                         )
-                    }
-                }
+                        db.upsertNote(fresh)
+                        refreshNotes()
+                        activeNoteId = fresh.id
+                    },
+                    onTogglePin = { note ->
+                        val updated = note.copy(
+                            isPinned = !note.isPinned,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        db.upsertNote(updated)
+                        refreshNotes()
+                    },
+                    onRequestRename = { note -> noteToRename = note },
+                    onRequestDelete = { note -> noteToDelete = note },
+                    onOpenSettings = { showSettingsDialog = true }
+                )
             }
         }
     }
+
+    // Rename Dialog
+    if (noteToRename != null) {
+        val target = noteToRename!!
+        RenameNoteDialog(
+            initialTitle = target.title,
+            onDismiss = { noteToRename = null },
+            onConfirm = { newTitle ->
+                val updated = target.copy(
+                    title = newTitle.trim(),
+                    updatedAt = System.currentTimeMillis()
+                )
+                db.upsertNote(updated)
+                refreshNotes()
+                noteToRename = null
+            }
+        )
+    }
+
+    // Delete Confirmation Dialog
+    if (noteToDelete != null) {
+        val target = noteToDelete!!
+        DeleteConfirmationDialog(
+            noteTitle = target.title.ifBlank { "Untitled" },
+            onDismiss = { noteToDelete = null },
+            onConfirmDelete = {
+                val deleting = target
+                noteToDelete = null
+                handleDeleteWithUndo(deleting)
+            }
+        )
+    }
+
+    // Genuine Settings Dialog
+    if (showSettingsDialog) {
+        SettingsDialog(
+            isDarkTheme = isDarkTheme,
+            onToggleDarkTheme = onToggleDarkTheme,
+            fontScaleIndex = fontScaleIndex,
+            onSelectFontScale = onSelectFontScale,
+            onDismiss = { showSettingsDialog = false }
+        )
+    }
 }
 
+// ============================================================================
+// HOMEPAGE (FOCUSED ON NOTES)
+// ============================================================================
+
 @Composable
-fun NoteCard(
-    note: Note,
-    isDarkTheme: Boolean,
-    unlockedSession: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
+fun NotesHomeScreen(
+    notes: List<Note>,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onOpenNote: (Note) -> Unit,
+    onCreateNote: () -> Unit,
+    onTogglePin: (Note) -> Unit,
+    onRequestRename: (Note) -> Unit,
+    onRequestDelete: (Note) -> Unit,
+    onOpenSettings: () -> Unit
 ) {
-    val palette = if (isDarkTheme) DarkNoteColors else LightNoteColors
-    val cardColor = palette[note.colorIndex.coerceIn(0, palette.lastIndex)]
-    val wikiLinksCount = remember(note.content) { extractWikiLinks(note.content).size }
+    val filteredNotes = remember(notes, searchQuery) {
+        val q = searchQuery.trim().lowercase()
+        val matching = if (q.isEmpty()) {
+            notes
+        } else {
+            notes.filter { note ->
+                note.title.lowercase().contains(q) ||
+                    note.document.text.lowercase().contains(q)
+            }
+        }
+        matching.sortedByDescending { it.updatedAt }
+    }
 
-    Surface(
-        color = cardColor,
-        shape = RoundedCornerShape(16.dp),
-        tonalElevation = 2.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .border(
-                width = if (note.isPinned) 1.5.dp else 0.5.dp,
-                color = if (note.isPinned) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
-                shape = RoundedCornerShape(16.dp)
-            )
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            )
+    val pinnedNotes = remember(filteredNotes) {
+        filteredNotes.filter { it.isPinned }
+    }
+
+    val unpinnedNotes = remember(filteredNotes) {
+        filteredNotes.filter { !it.isPinned }
+    }
+
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                Text(
-                    text = note.title.ifBlank { "Untitled Note" },
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (note.isLocked) {
-                        Icon(
-                            imageVector = if (unlockedSession) Icons.Default.LockOpen else Icons.Default.Lock,
-                            contentDescription = "Locked",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(Modifier.width(4.dp))
-                    }
-                    if (note.isPinned) {
-                        Icon(
-                            imageVector = Icons.Default.PushPin,
-                            contentDescription = "Pinned",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-            }
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .widthIn(max = 720.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Spacer(Modifier.height(16.dp))
 
-            Spacer(Modifier.height(8.dp))
-
-            if (note.isLocked && !unlockedSession) {
-                Text(
-                    text = "🔒 Encrypted Private Note — Tap to unlock with PIN",
-                    fontSize = 13.sp,
-                    fontStyle = FontStyle.Italic,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            } else {
-                Text(
-                    text = note.content.ifBlank { "Empty note..." },
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    maxLines = 6,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            // Tags & Metadata Footer
-            if (note.tags.isNotEmpty()) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.padding(bottom = 6.dp)
-                ) {
-                    note.tags.take(4).forEach { tag ->
-                        Surface(
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                            shape = RoundedCornerShape(6.dp)
-                        ) {
-                            Text(
-                                text = "#$tag",
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
+            // Clean App Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${note.folder} • ${formatTimestamp(note.updatedAt)}",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                    text = "Notes",
+                    fontSize = 30.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = (-0.6).sp,
+                    color = MaterialTheme.colorScheme.onBackground
                 )
-                if (wikiLinksCount > 0) {
-                    Text(
-                        text = "⇄ $wikiLinksCount",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-        }
-    }
-}
 
-// ============================================================================
-// NOTE EDITOR + READER MODE + ZETTELKASTEN GRAPH + POMODORO SPRINT
-// ============================================================================
-
-@Composable
-fun NoteEditorScreen(
-    note: Note,
-    allNotes: List<Note>,
-    isDarkTheme: Boolean,
-    onSave: (Note) -> Unit,
-    onClose: () -> Unit,
-    onOpenOrCreateLinkedNote: (String) -> Unit,
-    onRequestLockToggle: (Note) -> Unit,
-    onMoveToTrash: (Note) -> Unit,
-    onRestoreFromTrash: (Note) -> Unit,
-    onDeleteForever: (Note) -> Unit
-) {
-    val context = LocalContext.current
-    var title by remember(note.id) { mutableStateOf(note.title) }
-    var textFieldValue by remember(note.id) {
-        mutableStateOf(TextFieldValue(text = note.content, selection = TextRange(note.content.length)))
-    }
-    var folder by remember(note.id) { mutableStateOf(note.folder) }
-    var tagsText by remember(note.id) { mutableStateOf(note.tags.joinToString(", ")) }
-    var colorIndex by remember(note.id) { mutableStateOf(note.colorIndex) }
-    var isPinned by remember(note.id) { mutableStateOf(note.isPinned) }
-    var isReaderMode by remember { mutableStateOf(false) }
-    var showColorPicker by remember { mutableStateOf(false) }
-
-    // 25-Minute Focus Timer State
-    var timerRunning by remember { mutableStateOf(false) }
-    var timerSecondsLeft by remember { mutableStateOf(25 * 60) }
-
-    LaunchedEffect(timerRunning) {
-        while (timerRunning && timerSecondsLeft > 0) {
-            delay(1000L)
-            timerSecondsLeft--
-        }
-        if (timerSecondsLeft == 0 && timerRunning) {
-            timerRunning = false
-            Toast.makeText(context, "25-Minute Focus Sprint Complete!", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    fun persistCurrentState(): Note {
-        val parsedTags = tagsText.split(",")
-            .map { it.trim().removePrefix("#") }
-            .filter { it.isNotEmpty() }
-            .distinct()
-        val updated = note.copy(
-            title = title.ifBlank { "Untitled Note" },
-            content = textFieldValue.text,
-            folder = folder,
-            tags = parsedTags,
-            colorIndex = colorIndex,
-            isPinned = isPinned,
-            updatedAt = System.currentTimeMillis()
-        )
-        onSave(updated)
-        return updated
-    }
-
-    BackHandler {
-        persistCurrentState()
-        onClose()
-    }
-
-    // Export single note as Markdown (.md)
-    val exportMdLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("text/markdown")
-    ) { uri: Uri? ->
-        uri?.let {
-            val saved = persistCurrentState()
-            context.contentResolver.openOutputStream(it)?.use { out ->
-                val md = "# ${saved.title}\n\n${saved.content}\n"
-                out.write(md.toByteArray())
-            }
-            Toast.makeText(context, "Saved as Markdown (.md)!", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    val palette = if (isDarkTheme) DarkNoteColors else LightNoteColors
-    val bgColor = palette[colorIndex.coerceIn(0, palette.lastIndex)]
-
-    // Outgoing [[Wiki-Links]] and Incoming Backlinks
-    val outgoingLinks = remember(textFieldValue.text) { extractWikiLinks(textFieldValue.text) }
-    val incomingBacklinks = remember(allNotes, title, note.id) {
-        if (title.isBlank()) emptyList()
-        else allNotes.filter { other ->
-            other.id != note.id && extractWikiLinks(other.content).any {
-                it.equals(title.trim(), ignoreCase = true)
-            }
-        }
-    }
-
-    // Live word & reading stats
-    val wordCount = remember(textFieldValue.text) {
-        val trimmed = textFieldValue.text.trim()
-        if (trimmed.isEmpty()) 0 else trimmed.split(Regex("\\s+")).size
-    }
-    val readingTimeMin = remember(wordCount) { ceil(wordCount / 200.0).toInt().coerceAtLeast(1) }
-
-    Scaffold(
-        containerColor = bgColor,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = bgColor),
-                navigationIcon = {
-                    IconButton(onClick = {
-                        persistCurrentState()
-                        onClose()
-                    }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Save & Back")
-                    }
-                },
-                title = {
-                    // Focus Sprint Timer Pill
-                    Surface(
-                        color = if (timerRunning) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
-                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier.clickable {
-                            if (!timerRunning && timerSecondsLeft == 0) {
-                                timerSecondsLeft = 25 * 60
-                            }
-                            timerRunning = !timerRunning
-                        }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onCreateNote,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.Timer,
-                                contentDescription = "Pomodoro Focus Timer",
-                                modifier = Modifier.size(15.dp),
-                                tint = if (timerRunning) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(Modifier.width(5.dp))
-                            val mins = timerSecondsLeft / 60
-                            val secs = timerSecondsLeft % 60
-                            Text(
-                                text = "%02d:%02d".format(mins, secs),
-                                fontSize = 12.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "New note",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
-                },
-                actions = {
-                    if (note.isTrashed) {
-                        IconButton(onClick = { onRestoreFromTrash(note) }) {
-                            Icon(Icons.Default.RestoreFromTrash, contentDescription = "Restore")
-                        }
-                        IconButton(onClick = { onDeleteForever(note) }) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Delete Forever",
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    } else {
-                        IconButton(onClick = {
-                            persistCurrentState()
-                            isReaderMode = !isReaderMode
-                        }) {
-                            Icon(
-                                imageVector = if (isReaderMode) Icons.Default.Edit else Icons.Default.Visibility,
-                                contentDescription = "Toggle Reader Mode",
-                                tint = if (isReaderMode) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                        IconButton(onClick = { isPinned = !isPinned }) {
-                            Icon(
-                                Icons.Default.PushPin,
-                                contentDescription = "Pin",
-                                tint = if (isPinned) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                            )
-                        }
-                        IconButton(onClick = { showColorPicker = !showColorPicker }) {
-                            Icon(Icons.Default.Palette, contentDescription = "Note Color")
-                        }
-                        IconButton(onClick = {
-                            val current = persistCurrentState()
-                            onRequestLockToggle(current)
-                        }) {
-                            Icon(
-                                imageVector = if (note.isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                                contentDescription = "Lock Note",
-                                tint = if (note.isLocked) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                        }
-                        IconButton(onClick = {
-                            val safeName = (title.ifBlank { "Note" }).replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                            exportMdLauncher.launch("$safeName.md")
-                        }) {
-                            Icon(Icons.Default.Share, contentDescription = "Export Markdown")
-                        }
-                        IconButton(onClick = { onMoveToTrash(persistCurrentState()) }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Move to Trash")
-                        }
+
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
-            )
-        },
-        bottomBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(bgColor)
-                    .imePadding()
+            }
+
+            Spacer(Modifier.height(14.dp))
+
+            // Search Field
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                // Quick Markdown Formatting Bar (when in Edit mode)
-                if (!isReaderMode && !note.isTrashed) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        val insertSnippet: (String) -> Unit = { snippet ->
-                            val currentText = textFieldValue.text
-                            val sel = textFieldValue.selection.start.coerceIn(0, currentText.length)
-                            val newText = currentText.substring(0, sel) + snippet + currentText.substring(sel)
-                            textFieldValue = TextFieldValue(
-                                text = newText,
-                                selection = TextRange(sel + snippet.length)
-                            )
-                        }
-                        FormatPill("# H1") { insertSnippet("\n# ") }
-                        FormatPill("## H2") { insertSnippet("\n## ") }
-                        FormatPill("- [ ] Task") { insertSnippet("\n- [ ] ") }
-                        FormatPill("**Bold**") { insertSnippet("****") }
-                        FormatPill("[[WikiLink]]") { insertSnippet("[[]]") }
-                        FormatPill("`Code`") { insertSnippet("``") }
-                        FormatPill("> Quote") { insertSnippet("\n> ") }
-                        FormatPill("🕒 Time") {
-                            val nowStr = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-                            insertSnippet("[$nowStr] ")
-                        }
-                    }
-                }
-
-                // Live Stats Bar
-                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "$wordCount words • ${textFieldValue.text.length} chars • ~$readingTimeMin min read",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
                     )
-                    Text(
-                        text = if (isReaderMode) "READER MODE" else "EDIT MODE",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-        }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp, vertical = 8.dp)
-        ) {
-            // Color & Folder Selector Drawer
-            AnimatedVisibility(visible = showColorPicker) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        palette.forEachIndexed { idx, color ->
-                            Box(
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(color)
-                                    .border(
-                                        width = if (colorIndex == idx) 2.5.dp else 1.dp,
-                                        color = if (colorIndex == idx) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
-                                        shape = CircleShape
-                                    )
-                                    .clickable { colorIndex = idx }
+                    Spacer(Modifier.width(10.dp))
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                text = "Search notes",
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf("Notes", "Ideas", "Journal", "Tasks").forEach { f ->
-                            FilterChip(
-                                selected = folder == f,
-                                onClick = { folder = f },
-                                label = { Text(f) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Note Title Input
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                placeholder = {
-                    Text(
-                        "Note Title...",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                textStyle = LocalTextStyle.current.copy(
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color.Transparent,
-                    unfocusedBorderColor = Color.Transparent
-                )
-            )
-
-            // Tags Input Row
-            OutlinedTextField(
-                value = tagsText,
-                onValueChange = { tagsText = it },
-                placeholder = { Text("Tags (comma separated, e.g. ideas, roadmap)...", fontSize = 13.sp) },
-                textStyle = LocalTextStyle.current.copy(fontSize = 13.sp),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color.Transparent,
-                    unfocusedBorderColor = Color.Transparent
-                )
-            )
-
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-            )
-
-            // Main Body: Either Interactive Reader Mode or Raw Markdown Editor
-            if (isReaderMode) {
-                InteractiveMarkdownReader(
-                    content = textFieldValue.text,
-                    onToggleChecklistLine = { lineIndex ->
-                        val lines = textFieldValue.text.lines().toMutableList()
-                        if (lineIndex in lines.indices) {
-                            val line = lines[lineIndex]
-                            lines[lineIndex] = when {
-                                line.trimStart().startsWith("- [ ]") -> line.replaceFirst("- [ ]", "- [x]")
-                                line.trimStart().startsWith("- [x]") -> line.replaceFirst("- [x]", "- [ ]")
-                                else -> line
-                            }
-                            val updatedText = lines.joinToString("\n")
-                            textFieldValue = TextFieldValue(updatedText)
-                            persistCurrentState()
-                        }
-                    }
-                )
-            } else {
-                OutlinedTextField(
-                    value = textFieldValue,
-                    onValueChange = { textFieldValue = it },
-                    placeholder = {
-                        Text(
-                            "Write freely in Markdown... Use [[Note Name]] to link notes together or - [ ] for tasks."
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = onSearchQueryChange,
+                            singleLine = true,
+                            textStyle = TextStyle(
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth()
                         )
-                    },
-                    textStyle = LocalTextStyle.current.copy(
-                        fontSize = 16.sp,
-                        lineHeight = 24.sp
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 360.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedBorderColor = Color.Transparent
-                    )
-                )
+                    }
+                    if (searchQuery.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Clear search",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable { onSearchQueryChange("") }
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.height(16.dp))
 
-            // Zettelkasten [[Wiki-Links]] & Backlinks Section
-            if (outgoingLinks.isNotEmpty() || incomingBacklinks.isNotEmpty()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-                    shape = RoundedCornerShape(14.dp),
+            // Notes List or Empty State
+            if (filteredNotes.isEmpty()) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp)
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 32.dp)
+                    ) {
                         Text(
-                            text = "KNOWLEDGE GRAPH CONNECTIONS",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp,
-                            color = MaterialTheme.colorScheme.primary
+                            text = if (searchQuery.isNotBlank()) "No matching notes" else "No notes yet",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onBackground
                         )
-                        if (outgoingLinks.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "Outgoing Wiki-Links (Tap to open or create):",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                outgoingLinks.forEach { linkTitle ->
-                                    AssistChip(
-                                        onClick = {
-                                            persistCurrentState()
-                                            onOpenOrCreateLinkedNote(linkTitle)
-                                        },
-                                        label = { Text("[[$linkTitle]]", fontWeight = FontWeight.SemiBold) }
-                                    )
-                                }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = if (searchQuery.isNotBlank()) {
+                                "Try a different search term."
+                            } else {
+                                "Create a note to start writing."
+                            },
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (searchQuery.isBlank()) {
+                            Spacer(Modifier.height(18.dp))
+                            OutlinedButton(
+                                onClick = onCreateNote,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("New note")
                             }
                         }
-
-                        if (incomingBacklinks.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "Referenced By (Incoming Backlinks):",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(bottom = 40.dp)
+                ) {
+                    // Pinned Section (only shown when pinned notes exist)
+                    if (pinnedNotes.isNotEmpty()) {
+                        item(key = "header_pinned") {
+                            SectionHeader("Pinned")
+                        }
+                        items(pinnedNotes, key = { "pinned_${it.id}" }) { note ->
+                            NoteListItem(
+                                note = note,
+                                onClick = { onOpenNote(note) },
+                                onTogglePin = { onTogglePin(note) },
+                                onRename = { onRequestRename(note) },
+                                onDelete = { onRequestDelete(note) }
                             )
-                            Spacer(Modifier.height(4.dp))
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                incomingBacklinks.forEach { sourceNote ->
-                                    AssistChip(
-                                        onClick = {
-                                            persistCurrentState()
-                                            onOpenOrCreateLinkedNote(sourceNote.title)
-                                        },
-                                        label = { Text("← ${sourceNote.title}") }
-                                    )
-                                }
-                            }
+                        }
+                        item(key = "spacer_pinned") {
+                            Spacer(Modifier.height(20.dp))
+                        }
+                    }
+
+                    // All Notes Section
+                    item(key = "header_all_notes") {
+                        SectionHeader("All Notes")
+                    }
+                    if (unpinnedNotes.isEmpty() && pinnedNotes.isNotEmpty()) {
+                        item(key = "all_pinned_hint") {
+                            Text(
+                                text = "All of your notes are pinned above.",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp)
+                            )
+                        }
+                    } else {
+                        items(unpinnedNotes, key = { "note_${it.id}" }) { note ->
+                            NoteListItem(
+                                note = note,
+                                onClick = { onOpenNote(note) },
+                                onTogglePin = { onTogglePin(note) },
+                                onRename = { onRequestRename(note) },
+                                onDelete = { onRequestDelete(note) }
+                            )
                         }
                     }
                 }
@@ -1567,259 +1234,315 @@ fun NoteEditorScreen(
 }
 
 @Composable
-fun FormatPill(label: String, onClick: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.09f),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.clickable { onClick() }
-    ) {
-        Text(
-            text = label,
-            fontSize = 12.sp,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+fun SectionHeader(title: String) {
+    Text(
+        text = title,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.4.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 4.dp, bottom = 6.dp, top = 4.dp)
+    )
+}
+
+@Composable
+fun NoteListItem(
+    note: Note,
+    onClick: () -> Unit,
+    onTogglePin: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { menuExpanded = true }
+                )
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = note.title.ifBlank { "Untitled" },
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (note.isPinned) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Default.PushPin,
+                            contentDescription = "Pinned",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
+
+                val preview = note.previewText
+                Text(
+                    text = preview.ifBlank { "No additional text" },
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Spacer(Modifier.height(6.dp))
+
+                Text(
+                    text = formatRelativeDate(note.updatedAt),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                )
+            }
+
+            // Visible Three-Dot Action Menu
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreHoriz,
+                        contentDescription = "Note actions",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                NoteActionDropdownMenu(
+                    expanded = menuExpanded,
+                    isPinned = note.isPinned,
+                    onDismiss = { menuExpanded = false },
+                    onTogglePin = {
+                        menuExpanded = false
+                        onTogglePin()
+                    },
+                    onRename = {
+                        menuExpanded = false
+                        onRename()
+                    },
+                    onDelete = {
+                        menuExpanded = false
+                        onDelete()
+                    }
+                )
+            }
+        }
+
+        HorizontalDivider(
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+            thickness = 0.5.dp,
+            modifier = Modifier.padding(horizontal = 8.dp)
         )
     }
 }
 
 @Composable
-fun InteractiveMarkdownReader(
-    content: String,
-    onToggleChecklistLine: (Int) -> Unit
+fun NoteActionDropdownMenu(
+    expanded: Boolean,
+    isPinned: Boolean,
+    onDismiss: () -> Unit,
+    onTogglePin: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit
 ) {
-    val lines = remember(content) { content.lines() }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(12.dp),
+        containerColor = MaterialTheme.colorScheme.surface
     ) {
-        lines.forEachIndexed { index, rawLine ->
-            val trimmed = rawLine.trimStart()
-            when {
-                trimmed.startsWith("# ") -> {
-                    Text(
-                        text = trimmed.removePrefix("# "),
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                trimmed.startsWith("## ") -> {
-                    Text(
-                        text = trimmed.removePrefix("## "),
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                trimmed.startsWith("- [ ] ") || trimmed.startsWith("- [x] ") -> {
-                    val checked = trimmed.startsWith("- [x] ")
-                    val taskText = trimmed.substring(6)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { onToggleChecklistLine(index) }
-                            .padding(vertical = 2.dp)
-                    ) {
-                        Checkbox(
-                            checked = checked,
-                            onCheckedChange = { onToggleChecklistLine(index) }
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = taskText,
-                            fontSize = 16.sp,
-                            textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
-                            color = if (checked) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                            else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-                trimmed.startsWith("> ") -> {
-                    Surface(
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = trimmed.removePrefix("> "),
-                            fontStyle = FontStyle.Italic,
-                            fontSize = 15.sp,
-                            modifier = Modifier.padding(12.dp)
-                        )
-                    }
-                }
-                else -> {
-                    val styled = buildAnnotatedString {
-                        val wikiRegex = Regex("""\[\[([^\[\]]+)\]\]""")
-                        var lastIdx = 0
-                        for (match in wikiRegex.findAll(rawLine)) {
-                            append(rawLine.substring(lastIdx, match.range.first))
-                            withStyle(
-                                SpanStyle(
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            ) {
-                                append(match.value)
-                            }
-                            lastIdx = match.range.last + 1
-                        }
-                        if (lastIdx < rawLine.length) {
-                            append(rawLine.substring(lastIdx))
-                        }
-                    }
-                    Text(
-                        text = styled,
-                        fontSize = 16.sp,
-                        lineHeight = 24.sp
-                    )
-                }
-            }
-        }
+        DropdownMenuItem(
+            text = { Text(if (isPinned) "Unpin" else "Pin") },
+            leadingIcon = {
+                Icon(
+                    imageVector = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            onClick = onTogglePin
+        )
+        DropdownMenuItem(
+            text = { Text("Rename") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            onClick = onRename
+        )
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 4.dp),
+            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+        )
+        DropdownMenuItem(
+            text = {
+                Text(
+                    text = "Delete",
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Medium
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            onClick = onDelete
+        )
     }
 }
 
 // ============================================================================
-// SECURITY AUDIT & PIN DIALOGS
+// NOTE EDITOR SCREEN (DISTRACTION-FREE WYSIWYG CANVAS)
 // ============================================================================
 
+enum class SaveStatus {
+    SAVED,
+    SAVING
+}
+
 @Composable
-fun AirGapSecurityDialog(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val requestedPermissions = remember {
-        try {
-            val pkgInfo = context.packageManager.getPackageInfo(
-                context.packageName,
-                PackageManager.GET_PERMISSIONS
+fun NoteEditorScreen(
+    note: Note,
+    baseFontSizeSp: Float,
+    onAutoSave: (Note) -> Unit,
+    onBack: () -> Unit,
+    onTogglePin: (Note) -> Unit,
+    onRequestRename: (Note) -> Unit,
+    onRequestDelete: (Note) -> Unit
+) {
+    // Local editor states keyed by note.id so background autosave never interrupts typing
+    var title by remember(note.id) { mutableStateOf(note.title) }
+    var doc by remember(note.id) { mutableStateOf(note.document) }
+    var textFieldValue by remember(note.id) {
+        mutableStateOf(
+            TextFieldValue(
+                text = note.document.text,
+                selection = TextRange(note.document.text.length)
             )
-            pkgInfo.requestedPermissions?.toList() ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
+        )
+    }
+
+    // Sync external rename if triggered via the Rename dialog
+    LaunchedEffect(note.title) {
+        if (note.title != title) {
+            title = note.title
         }
     }
-    val hasInternet = requestedPermissions.contains("android.permission.INTERNET")
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                Icons.Default.Security,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
+    var saveStatus by remember { mutableStateOf(SaveStatus.SAVED) }
+    var showFormattingBar by remember { mutableStateOf(false) }
+    var activeBold by remember { mutableStateOf(false) }
+    var activeItalic by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showLinkDialog by remember { mutableStateOf(false) }
+
+    val bodyFocusRequester = remember { FocusRequester() }
+    val titleFocusRequester = remember { FocusRequester() }
+
+    // Auto-focus title when creating a brand new empty note
+    LaunchedEffect(note.id) {
+        if (note.title.isEmpty() && note.document.text.isEmpty()) {
+            delay(100)
+            runCatching { titleFocusRequester.requestFocus() }
+        }
+    }
+
+    fun buildCurrentNote(): Note {
+        return note.copy(
+            title = title.trim(),
+            document = doc,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    fun triggerImmediateSave(updatedDoc: RichNoteDocument = doc, updatedTitle: String = title) {
+        saveStatus = SaveStatus.SAVING
+        onAutoSave(
+            note.copy(
+                title = updatedTitle.trim(),
+                document = updatedDoc,
+                updatedAt = System.currentTimeMillis()
             )
-        },
-        title = { Text("OS Air-Gap Security Audit", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = if (!hasInternet)
-                        "✅ VERIFIED OFFLINE: Android PackageManager confirms this APK declares ZERO network permissions."
-                    else "⚠️ Network permission detected.",
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = "• android.permission.INTERNET: DENIED AT OS LEVEL\n" +
-                        "• Cloud Telemetry / Analytics SDKs: 0\n" +
-                        "• Storage Engine: Local SQLite (monolith_vault.db)\n" +
-                        "• Declared Manifest Permissions: ${requestedPermissions.size}",
-                    fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = onDismiss) {
-                Text("Awesome")
-            }
-        }
-    )
-}
+        )
+    }
 
-@Composable
-fun SetupPinDialog(
-    onDismiss: () -> Unit,
-    onPinCreated: (String) -> Unit
-) {
-    var pin by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Set Vault PIN Code") },
-        text = {
-            Column {
-                Text("Protect locked notes with a local SHA-256 hashed PIN:")
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = pin,
-                    onValueChange = { if (it.length <= 8) pin = it.filter { c -> c.isDigit() } },
-                    label = { Text("Enter 4–8 digit PIN") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    singleLine = true
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                enabled = pin.length >= 4,
-                onClick = { onPinCreated(pin) }
-            ) {
-                Text("Save PIN")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+    // Settle Saving -> Saved indicator smoothly
+    LaunchedEffect(title, doc) {
+        if (saveStatus == SaveStatus.SAVING) {
+            delay(400)
+            saveStatus = SaveStatus.SAVED
         }
-    )
-}
+    }
 
-@Composable
-fun VerifyPinDialog(
-    expectedHash: String,
-    onDismiss: () -> Unit,
-    onUnlocked: () -> Unit
-) {
-    var pin by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf(false) }
+    BackHandler {
+        onAutoSave(buildCurrentNote())
+        onBack()
+    }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Unlock Private Note") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = pin,
-                    onValueChange = {
-                        error = false
-                        pin = it.filter { c -> c.isDigit() }
-                        if (hashPin(pin) == expectedHash) {
-                            onUnlocked()
-                        }
-                    },
-                    label = { Text("Enter Vault PIN") },
-                    isError = error,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    singleLine = true
-                )
-                if (error) {
-                    Spacer(Modifier.height(4.dp))
-                    Text("Incorrect PIN", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                if (hashPin(pin) == expectedHash) onUnlocked() else error = true
-            }) {
-                Text("Unlock")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+    // Determine current line index and line bounds for toolbar controls
+    val currentCursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
+    val currentLineIndex = remember(textFieldValue.text, currentCursor) {
+        textFieldValue.text.substring(0, currentCursor).count { it == '\n' }
+    }
+    val currentHeadingStyle = doc.lineHeadings[currentLineIndex] ?: HeadingStyle.TEXT
+
+    // Sync activeBold / activeItalic with current cursor or selection
+    val isSelectionBold = remember(doc.spans, textFieldValue.selection, activeBold) {
+        val sel = textFieldValue.selection
+        if (!sel.collapsed) {
+            doc.spans.any { it.start <= sel.min && it.end >= sel.max && it.bold }
+        } else {
+            activeBold || doc.spans.any { it.start < sel.start && it.end >= sel.start && it.bold }
         }
-    )
-}
+    }
+
+    val isSelectionItalic = remember(doc.spans, textFieldValue.selection, activeItalic) {
+        val sel = textFieldValue.selection
+        if (!sel.collapsed) {
+            doc.spans.any { it.start <= sel.min && it.end >= sel.max && it.italic }
+        } else {
+            activeItalic || doc.spans.any { it.start < sel.start && it.end >= sel.start && it.italic }
+        }
+    }
+
+    // Show formatting bar automatically when text is selected, or when toggled via 'Aa'
+    val isToolbarVisible = showFormattingBar || !textFieldValue.selection.collapsed
+
+    val accentColor = MaterialTheme.colorScheme.primary
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val visualTransformation = remember(doc, baseFontSizeSp, accentColor, mutedColor) {
+        WysiwygVisualTransformation(
+            doc = doc,
+            baseFontSizeSp = baseFontSizeSp,
+            accentColor = accentColor,
+            mutedColor = mutedColor
+        )
+    }
