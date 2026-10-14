@@ -7,6 +7,7 @@ package com.local.monolith
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.SharedPreferences
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.Bundle
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -36,7 +38,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
@@ -72,6 +77,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -232,12 +238,74 @@ data class Note(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
     val document: RichNoteDocument,
+    val folder: String = "",
     val isPinned: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     val previewText: String get() = document.toPlainPreview()
 }
+
+// ============================================================================
+// VOLATILE IN-MEMORY UNDO/REDO SNAPSHOTS (CLEARED AUTOMATICALLY ON APP CLOSE)
+// ============================================================================
+
+data class EditorSnapshot(
+    val title: String,
+    val document: RichNoteDocument,
+    val selection: TextRange,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+class SessionUndoQueue(initialSnapshot: EditorSnapshot) {
+    private val maxSteps = 25
+    val undoStack = mutableStateListOf(initialSnapshot)
+    val redoStack = mutableStateListOf<EditorSnapshot>()
+
+    val canUndo: Boolean get() = undoStack.size > 1
+    val canRedo: Boolean get() = redoStack.isNotEmpty()
+
+    fun recordChange(snapshot: EditorSnapshot, forceNewStep: Boolean = false) {
+        val current = undoStack.lastOrNull()
+        if (current != null && current.title == snapshot.title && current.document == snapshot.document) {
+            return
+        }
+        redoStack.clear()
+
+        if (!forceNewStep && current != null && undoStack.size > 1) {
+            val timeDiff = snapshot.timestamp - current.timestamp
+            val charDiff = abs(snapshot.document.text.length - current.document.text.length)
+            val sameLineCount = snapshot.document.text.count { it == '\n' } == current.document.text.count { it == '\n' }
+            if (timeDiff < 1100L && charDiff <= 12 && sameLineCount && current.document.lineHeadings == snapshot.document.lineHeadings) {
+                undoStack[undoStack.lastIndex] = snapshot
+                return
+            }
+        }
+
+        undoStack.add(snapshot)
+        while (undoStack.size > maxSteps) {
+            undoStack.removeAt(0)
+        }
+    }
+
+    fun undo(): EditorSnapshot? {
+        if (!canUndo) return null
+        val popped = undoStack.removeAt(undoStack.lastIndex)
+        redoStack.add(popped)
+        return undoStack.last()
+    }
+
+    fun redo(): EditorSnapshot? {
+        if (!canRedo) return null
+        val restored = redoStack.removeAt(redoStack.lastIndex)
+        undoStack.add(restored)
+        return restored
+    }
+}
+
+// ============================================================================
+// LOCAL SQLITE DATABASE
+// ============================================================================
 
 class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vault.db", null, 2) {
 
@@ -281,6 +349,7 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
             )
             db.execSQL("UPDATE notes SET is_locked = 0 WHERE is_locked != 0")
             db.execSQL("DELETE FROM notes WHERE is_trashed = 1")
+            db.execSQL("UPDATE notes SET folder = '' WHERE folder = 'Notes'")
         } catch (_: Exception) {}
     }
 
@@ -290,7 +359,7 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
                 put("id", note.id)
                 put("title", note.title)
                 put("content", note.document.serialize())
-                put("folder", "Notes")
+                put("folder", note.folder.trim())
                 put("tags", "")
                 put("color_index", 0)
                 put("is_pinned", if (note.isPinned) 1 else 0)
@@ -309,6 +378,13 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
         } catch (_: Exception) {}
     }
 
+    fun clearFolderFromNotes(folderName: String) {
+        try {
+            val values = ContentValues().apply { put("folder", "") }
+            writableDatabase.update("notes", values, "folder = ?", arrayOf(folderName))
+        } catch (_: Exception) {}
+    }
+
     fun getAllNotes(): List<Note> {
         val list = mutableListOf<Note>()
         try {
@@ -320,6 +396,7 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
                     val id = c.getString(c.getColumnIndexOrThrow("id")) ?: UUID.randomUUID().toString()
                     val title = c.getString(c.getColumnIndexOrThrow("title")) ?: ""
                     val rawContent = c.getString(c.getColumnIndexOrThrow("content")) ?: ""
+                    val rawFolder = c.getString(c.getColumnIndexOrThrow("folder")) ?: ""
                     val isPinned = c.getInt(c.getColumnIndexOrThrow("is_pinned")) == 1
                     val createdAt = c.getLong(c.getColumnIndexOrThrow("created_at"))
                     val updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at"))
@@ -328,6 +405,7 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
                             id = id,
                             title = if (title == "Untitled Note") "" else title,
                             document = RichNoteDocument.deserialize(rawContent),
+                            folder = if (rawFolder == "Notes") "" else rawFolder,
                             isPinned = isPinned,
                             createdAt = createdAt,
                             updatedAt = updatedAt
@@ -339,6 +417,31 @@ class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vaul
         return list.sortedByDescending { it.updatedAt }
     }
 }
+
+fun loadSavedFolders(prefs: SharedPreferences): List<String> {
+    val raw = prefs.getString("custom_folders_json", null) ?: return emptyList()
+    return try {
+        val arr = JSONArray(raw)
+        val list = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            val name = arr.optString(i).trim()
+            if (name.isNotEmpty() && !list.contains(name)) list.add(name)
+        }
+        list
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+fun saveFoldersList(prefs: SharedPreferences, folders: List<String>) {
+    val arr = JSONArray()
+    folders.map { it.trim() }.filter { it.isNotEmpty() }.distinct().forEach { arr.put(it) }
+    prefs.edit().putString("custom_folders_json", arr.toString()).apply()
+}
+
+// ============================================================================
+// FORMATTING ENGINE & WYSIWYG VISUAL TRANSFORMATION
+// ============================================================================
 
 fun adjustDocumentOnEdit(
     oldDoc: RichNoteDocument,
@@ -643,6 +746,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     NotesApp(
                         db = db,
+                        prefs = prefs,
                         isDarkTheme = isDarkTheme,
                         onToggleDarkTheme = { enabled ->
                             isDarkTheme = enabled
@@ -664,6 +768,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun NotesApp(
     db: NotesDatabase,
+    prefs: SharedPreferences,
     isDarkTheme: Boolean,
     onToggleDarkTheme: (Boolean) -> Unit,
     fontScaleIndex: Int,
@@ -674,12 +779,26 @@ fun NotesApp(
     val snackbarHostState = remember { SnackbarHostState() }
 
     var notes by remember { mutableStateOf(db.getAllNotes()) }
+    var customFolders by remember { mutableStateOf(loadSavedFolders(prefs)) }
+    var selectedFolder by remember { mutableStateOf<String?>(null) }
     var activeNoteId by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
+    // Session-only Undo/Redo history map (exists strictly in RAM; disappears when app closes)
+    val sessionUndoMap = remember { mutableMapOf<String, SessionUndoQueue>() }
+
+    // Modal states
     var noteToRename by remember { mutableStateOf<Note?>(null) }
     var noteToDelete by remember { mutableStateOf<Note?>(null) }
+    var noteToMoveFolder by remember { mutableStateOf<Note?>(null) }
+    var showNewFolderDialog by remember { mutableStateOf(false) }
+    var folderToDelete by remember { mutableStateOf<String?>(null) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+
+    val allFolders = remember(customFolders, notes) {
+        val fromNotes = notes.map { it.folder.trim() }.filter { it.isNotEmpty() }
+        (customFolders + fromNotes).distinct()
+    }
 
     fun refreshNotes() {
         notes = db.getAllNotes()
@@ -727,9 +846,23 @@ fun NotesApp(
                 .padding(rootPadding)
         ) {
             if (activeNote != null) {
+                val undoQueue = remember(activeNote.id) {
+                    sessionUndoMap.getOrPut(activeNote.id) {
+                        SessionUndoQueue(
+                            EditorSnapshot(
+                                title = activeNote.title,
+                                document = activeNote.document,
+                                selection = TextRange(activeNote.document.text.length)
+                            )
+                        )
+                    }
+                }
+
                 NoteEditorScreen(
                     note = activeNote,
+                    undoQueue = undoQueue,
                     baseFontSizeSp = baseFontSizeSp,
+                    hasFolders = allFolders.isNotEmpty(),
                     onAutoSave = { updated ->
                         db.upsertNote(updated)
                         refreshNotes()
@@ -747,20 +880,30 @@ fun NotesApp(
                         refreshNotes()
                     },
                     onRequestRename = { current -> noteToRename = current },
+                    onRequestMoveFolder = { current -> noteToMoveFolder = current },
                     onRequestDelete = { current -> noteToDelete = current }
                 )
             } else {
                 NotesHomeScreen(
                     notes = notes,
+                    folders = allFolders,
+                    selectedFolder = selectedFolder,
+                    onSelectFolder = { folder -> selectedFolder = folder },
+                    onRequestDeleteFolder = { folder -> folderToDelete = folder },
                     searchQuery = searchQuery,
                     onSearchQueryChange = { searchQuery = it },
                     onOpenNote = { note -> activeNoteId = note.id },
                     onCreateNote = {
-                        val fresh = Note(title = "", document = RichNoteDocument())
+                        val fresh = Note(
+                            title = "",
+                            document = RichNoteDocument(),
+                            folder = selectedFolder ?: ""
+                        )
                         db.upsertNote(fresh)
                         refreshNotes()
                         activeNoteId = fresh.id
                     },
+                    onRequestCreateFolder = { showNewFolderDialog = true },
                     onTogglePin = { note ->
                         val updated = note.copy(
                             isPinned = !note.isPinned,
@@ -770,11 +913,67 @@ fun NotesApp(
                         refreshNotes()
                     },
                     onRequestRename = { note -> noteToRename = note },
+                    onRequestMoveFolder = { note -> noteToMoveFolder = note },
                     onRequestDelete = { note -> noteToDelete = note },
                     onOpenSettings = { showSettingsDialog = true }
                 )
             }
         }
+    }
+
+    if (showNewFolderDialog) {
+        NewFolderDialog(
+            onDismiss = { showNewFolderDialog = false },
+            onConfirm = { rawName ->
+                val clean = rawName.trim()
+                if (clean.isNotEmpty()) {
+                    val updated = (customFolders + clean).distinct()
+                    customFolders = updated
+                    saveFoldersList(prefs, updated)
+                    selectedFolder = clean
+                }
+                showNewFolderDialog = false
+            }
+        )
+    }
+
+    if (folderToDelete != null) {
+        val targetFolder = folderToDelete!!
+        DeleteFolderDialog(
+            folderName = targetFolder,
+            onDismiss = { folderToDelete = null },
+            onConfirmDelete = {
+                val updated = customFolders.filterNot { it.equals(targetFolder, ignoreCase = true) }
+                customFolders = updated
+                saveFoldersList(prefs, updated)
+                db.clearFolderFromNotes(targetFolder)
+                if (selectedFolder == targetFolder) selectedFolder = null
+                refreshNotes()
+                folderToDelete = null
+            }
+        )
+    }
+
+    if (noteToMoveFolder != null) {
+        val target = noteToMoveFolder!!
+        MoveToFolderDialog(
+            currentFolder = target.folder,
+            folders = allFolders,
+            onDismiss = { noteToMoveFolder = null },
+            onSelectFolder = { chosenFolder ->
+                val updated = target.copy(
+                    folder = chosenFolder,
+                    updatedAt = System.currentTimeMillis()
+                )
+                db.upsertNote(updated)
+                refreshNotes()
+                noteToMoveFolder = null
+            },
+            onCreateNewFolder = {
+                noteToMoveFolder = null
+                showNewFolderDialog = true
+            }
+        )
     }
 
     if (noteToRename != null) {
@@ -821,25 +1020,30 @@ fun NotesApp(
 @Composable
 fun NotesHomeScreen(
     notes: List<Note>,
+    folders: List<String>,
+    selectedFolder: String?,
+    onSelectFolder: (String?) -> Unit,
+    onRequestDeleteFolder: (String) -> Unit,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onOpenNote: (Note) -> Unit,
     onCreateNote: () -> Unit,
+    onRequestCreateFolder: () -> Unit,
     onTogglePin: (Note) -> Unit,
     onRequestRename: (Note) -> Unit,
+    onRequestMoveFolder: (Note) -> Unit,
     onRequestDelete: (Note) -> Unit,
     onOpenSettings: () -> Unit
 ) {
-    val filteredNotes = remember(notes, searchQuery) {
+    val filteredNotes = remember(notes, searchQuery, selectedFolder) {
         val q = searchQuery.trim().lowercase()
-        val matching = if (q.isEmpty()) {
-            notes
-        } else {
-            notes.filter { note ->
-                note.title.lowercase().contains(q) || note.document.text.lowercase().contains(q)
-            }
-        }
-        matching.sortedByDescending { it.updatedAt }
+        notes.filter { note ->
+            val matchesFolder = selectedFolder == null || note.folder.equals(selectedFolder, ignoreCase = true)
+            val matchesQuery = q.isEmpty() ||
+                note.title.lowercase().contains(q) ||
+                note.document.text.lowercase().contains(q)
+            matchesFolder && matchesQuery
+        }.sortedByDescending { it.updatedAt }
     }
 
     val pinnedNotes = remember(filteredNotes) { filteredNotes.filter { it.isPinned } }
@@ -858,6 +1062,7 @@ fun NotesHomeScreen(
         ) {
             Spacer(Modifier.height(16.dp))
 
+            // App Header: Title on left, "New folder" + Settings on right
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -876,7 +1081,7 @@ fun NotesHomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
-                        onClick = onCreateNote,
+                        onClick = onRequestCreateFolder,
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
@@ -886,13 +1091,13 @@ fun NotesHomeScreen(
                         elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Add,
+                            imageVector = Icons.Default.CreateNewFolder,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = "New note",
+                            text = "New folder",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Medium
                         )
@@ -910,6 +1115,7 @@ fun NotesHomeScreen(
 
             Spacer(Modifier.height(14.dp))
 
+            // Search Field
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
                 shape = RoundedCornerShape(10.dp),
@@ -961,6 +1167,36 @@ fun NotesHomeScreen(
                 }
             }
 
+            // Minimal Folder Filter Row (shown when at least one folder exists)
+            if (folders.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FolderPill(
+                        label = "All",
+                        selected = selectedFolder == null,
+                        onClick = { onSelectFolder(null) },
+                        onLongClick = null
+                    )
+                    folders.forEach { folderName ->
+                        val isSelected = selectedFolder.equals(folderName, ignoreCase = true)
+                        FolderPill(
+                            label = folderName,
+                            selected = isSelected,
+                            onClick = {
+                                onSelectFolder(if (isSelected) null else folderName)
+                            },
+                            onLongClick = { onRequestDeleteFolder(folderName) }
+                        )
+                    }
+                }
+            }
+
             Spacer(Modifier.height(16.dp))
 
             if (filteredNotes.isEmpty()) {
@@ -975,26 +1211,25 @@ fun NotesHomeScreen(
                         modifier = Modifier.padding(horizontal = 32.dp)
                     ) {
                         Text(
-                            text = if (searchQuery.isNotBlank()) "No matching notes" else "No notes yet",
+                            text = when {
+                                searchQuery.isNotBlank() -> "No matching notes"
+                                selectedFolder != null -> "No notes in “$selectedFolder”"
+                                else -> "No notes yet"
+                            },
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onBackground
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            text = if (searchQuery.isNotBlank()) "Try a different search term." else "Create a note to start writing.",
+                            text = if (searchQuery.isNotBlank()) {
+                                "Try a different search term."
+                            } else {
+                                "Tap the + button below to start writing."
+                            },
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (searchQuery.isBlank()) {
-                            Spacer(Modifier.height(18.dp))
-                            OutlinedButton(
-                                onClick = onCreateNote,
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("New note")
-                            }
-                        }
                     }
                 }
             } else {
@@ -1002,27 +1237,31 @@ fun NotesHomeScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
-                    contentPadding = PaddingValues(bottom = 40.dp)
+                    contentPadding = PaddingValues(bottom = 96.dp)
                 ) {
                     if (pinnedNotes.isNotEmpty()) {
                         item(key = "header_pinned") { SectionHeader("Pinned") }
                         items(pinnedNotes, key = { "pinned_${it.id}" }) { note ->
                             NoteListItem(
                                 note = note,
+                                showFolderBadge = selectedFolder == null && note.folder.isNotBlank(),
                                 onClick = { onOpenNote(note) },
                                 onTogglePin = { onTogglePin(note) },
                                 onRename = { onRequestRename(note) },
+                                onMoveFolder = { onRequestMoveFolder(note) },
                                 onDelete = { onRequestDelete(note) }
                             )
                         }
                         item(key = "spacer_pinned") { Spacer(Modifier.height(20.dp)) }
                     }
 
-                    item(key = "header_all_notes") { SectionHeader("All Notes") }
+                    item(key = "header_all_notes") {
+                        SectionHeader(selectedFolder ?: "All Notes")
+                    }
                     if (unpinnedNotes.isEmpty() && pinnedNotes.isNotEmpty()) {
                         item(key = "all_pinned_hint") {
                             Text(
-                                text = "All of your notes are pinned above.",
+                                text = "All notes in this view are pinned above.",
                                 fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp)
@@ -1032,9 +1271,11 @@ fun NotesHomeScreen(
                         items(unpinnedNotes, key = { "note_${it.id}" }) { note ->
                             NoteListItem(
                                 note = note,
+                                showFolderBadge = selectedFolder == null && note.folder.isNotBlank(),
                                 onClick = { onOpenNote(note) },
                                 onTogglePin = { onTogglePin(note) },
                                 onRename = { onRequestRename(note) },
+                                onMoveFolder = { onRequestMoveFolder(note) },
                                 onDelete = { onRequestDelete(note) }
                             )
                         }
@@ -1042,6 +1283,54 @@ fun NotesHomeScreen(
                 }
             }
         }
+
+        // Bottom-Right Floating Plus (+) Button to Create a New Note
+        FloatingActionButton(
+            onClick = onCreateNote,
+            shape = CircleShape,
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            elevation = FloatingActionButtonDefaults.elevation(
+                defaultElevation = 3.dp,
+                pressedElevation = 6.dp
+            ),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 24.dp, bottom = 24.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "New note",
+                modifier = Modifier.size(26.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun FolderPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?
+) {
+    Surface(
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+    ) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        )
     }
 }
 
@@ -1060,9 +1349,11 @@ fun SectionHeader(title: String) {
 @Composable
 fun NoteListItem(
     note: Note,
+    showFolderBadge: Boolean,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
     onRename: () -> Unit,
+    onMoveFolder: () -> Unit,
     onDelete: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -1119,11 +1410,22 @@ fun NoteListItem(
 
                 Spacer(Modifier.height(6.dp))
 
-                Text(
-                    text = formatRelativeDate(note.updatedAt),
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = formatRelativeDate(note.updatedAt),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                    )
+                    if (showFolderBadge && note.folder.isNotBlank()) {
+                        Text(
+                            text = "  ·  ${note.folder}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
 
             Box {
@@ -1151,6 +1453,10 @@ fun NoteListItem(
                         menuExpanded = false
                         onRename()
                     },
+                    onMoveFolder = {
+                        menuExpanded = false
+                        onMoveFolder()
+                    },
                     onDelete = {
                         menuExpanded = false
                         onDelete()
@@ -1174,6 +1480,7 @@ fun NoteActionDropdownMenu(
     onDismiss: () -> Unit,
     onTogglePin: () -> Unit,
     onRename: () -> Unit,
+    onMoveFolder: () -> Unit,
     onDelete: () -> Unit
 ) {
     DropdownMenu(
@@ -1203,6 +1510,17 @@ fun NoteActionDropdownMenu(
                 )
             },
             onClick = onRename
+        )
+        DropdownMenuItem(
+            text = { Text("Move to folder") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Outlined.Folder,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            onClick = onMoveFolder
         )
         HorizontalDivider(
             modifier = Modifier.padding(vertical = 4.dp),
@@ -1234,11 +1552,14 @@ enum class SaveStatus { SAVED, SAVING }
 @Composable
 fun NoteEditorScreen(
     note: Note,
+    undoQueue: SessionUndoQueue,
     baseFontSizeSp: Float,
+    hasFolders: Boolean,
     onAutoSave: (Note) -> Unit,
     onBack: () -> Unit,
     onTogglePin: (Note) -> Unit,
     onRequestRename: (Note) -> Unit,
+    onRequestMoveFolder: (Note) -> Unit,
     onRequestDelete: (Note) -> Unit
 ) {
     var title by remember(note.id) { mutableStateOf(note.title) }
@@ -1279,7 +1600,23 @@ fun NoteEditorScreen(
         updatedAt = System.currentTimeMillis()
     )
 
-    fun triggerImmediateSave(updatedDoc: RichNoteDocument = doc, updatedTitle: String = title) {
+    fun triggerImmediateSave(
+        updatedDoc: RichNoteDocument = doc,
+        updatedTitle: String = title,
+        selection: TextRange = textFieldValue.selection,
+        recordInUndo: Boolean = true,
+        forceNewUndoStep: Boolean = false
+    ) {
+        if (recordInUndo) {
+            undoQueue.recordChange(
+                snapshot = EditorSnapshot(
+                    title = updatedTitle,
+                    document = updatedDoc,
+                    selection = selection
+                ),
+                forceNewStep = forceNewUndoStep
+            )
+        }
         saveStatus = SaveStatus.SAVING
         onAutoSave(
             note.copy(
@@ -1287,6 +1624,23 @@ fun NoteEditorScreen(
                 document = updatedDoc,
                 updatedAt = System.currentTimeMillis()
             )
+        )
+    }
+
+    fun applySnapshot(snapshot: EditorSnapshot) {
+        title = snapshot.title
+        doc = snapshot.document
+        val safeEnd = snapshot.selection.end.coerceIn(0, snapshot.document.text.length)
+        val safeStart = snapshot.selection.start.coerceIn(0, snapshot.document.text.length)
+        textFieldValue = TextFieldValue(
+            text = snapshot.document.text,
+            selection = TextRange(safeStart, safeEnd)
+        )
+        triggerImmediateSave(
+            updatedDoc = snapshot.document,
+            updatedTitle = snapshot.title,
+            selection = TextRange(safeStart, safeEnd),
+            recordInUndo = false
         )
     }
 
@@ -1365,11 +1719,12 @@ fun NoteEditorScreen(
         val newText = raw.substring(0, lineStart) + replacementLine + raw.substring(lineEnd)
         val lengthDelta = replacementLine.length - currentLine.length
         val newCursor = (cursor + lengthDelta).coerceIn(lineStart, lineStart + replacementLine.length)
+        val newSelection = TextRange(newCursor)
 
         val updatedDoc = adjustDocumentOnEdit(doc, newText, activeBold = false, activeItalic = false)
         doc = updatedDoc
-        textFieldValue = TextFieldValue(text = newText, selection = TextRange(newCursor))
-        triggerImmediateSave(updatedDoc = updatedDoc)
+        textFieldValue = TextFieldValue(text = newText, selection = newSelection)
+        triggerImmediateSave(updatedDoc = updatedDoc, selection = newSelection, forceNewUndoStep = true)
     }
 
     Column(
@@ -1404,7 +1759,7 @@ fun NoteEditorScreen(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
                         text = if (saveStatus == SaveStatus.SAVING) "Saving…" else "Saved",
@@ -1412,6 +1767,38 @@ fun NoteEditorScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                         modifier = Modifier.padding(end = 6.dp)
                     )
+
+                    // Session Undo Button
+                    IconButton(
+                        onClick = {
+                            undoQueue.undo()?.let { applySnapshot(it) }
+                        },
+                        enabled = undoQueue.canUndo
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                            contentDescription = "Undo",
+                            tint = if (undoQueue.canUndo) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // Session Redo Button
+                    IconButton(
+                        onClick = {
+                            undoQueue.redo()?.let { applySnapshot(it) }
+                        },
+                        enabled = undoQueue.canRedo
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Redo,
+                            contentDescription = "Redo",
+                            tint = if (undoQueue.canRedo) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
 
                     IconButton(onClick = { showFormattingBar = !showFormattingBar }) {
                         Icon(
@@ -1443,6 +1830,10 @@ fun NoteEditorScreen(
                                 showMoreMenu = false
                                 onRequestRename(buildCurrentNote())
                             },
+                            onMoveFolder = {
+                                showMoreMenu = false
+                                onRequestMoveFolder(buildCurrentNote())
+                            },
                             onDelete = {
                                 showMoreMenu = false
                                 onRequestDelete(buildCurrentNote())
@@ -1466,6 +1857,30 @@ fun NoteEditorScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 24.dp, vertical = 12.dp)
             ) {
+                if (note.folder.isNotBlank() || hasFolders) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { onRequestMoveFolder(buildCurrentNote()) }
+                            .padding(vertical = 4.dp, horizontal = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = note.folder.ifBlank { "Add to folder" },
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+
                 Box(modifier = Modifier.fillMaxWidth()) {
                     if (title.isEmpty()) {
                         Text(
@@ -1536,12 +1951,10 @@ fun NoteEditorScreen(
                                     val toggledPrefix = if (line.startsWith("☐ ")) "☑ " else "☐ "
                                     val updatedText = newText.substring(0, lineStart) + toggledPrefix + line.substring(2)
                                     val updatedDoc = doc.copy(text = updatedText)
+                                    val newSel = TextRange((lineStart + 2).coerceAtMost(updatedText.length))
                                     doc = updatedDoc
-                                    textFieldValue = TextFieldValue(
-                                        text = updatedText,
-                                        selection = TextRange((lineStart + 2).coerceAtMost(updatedText.length))
-                                    )
-                                    triggerImmediateSave(updatedDoc = updatedDoc)
+                                    textFieldValue = TextFieldValue(text = updatedText, selection = newSel)
+                                    triggerImmediateSave(updatedDoc = updatedDoc, selection = newSel, forceNewUndoStep = true)
                                     return@BasicTextField
                                 }
                             }
@@ -1557,25 +1970,28 @@ fun NoteEditorScreen(
                                         prevLine == "• " || prevLine == "☐ " || prevLine == "☑ " -> {
                                             val cleanedText = newText.substring(0, prevLineStart) + newText.substring(insIdx + 1)
                                             val updatedDoc = adjustDocumentOnEdit(doc, cleanedText, activeBold, activeItalic)
+                                            val newSel = TextRange(prevLineStart)
                                             doc = updatedDoc
-                                            textFieldValue = TextFieldValue(text = cleanedText, selection = TextRange(prevLineStart))
-                                            triggerImmediateSave(updatedDoc = updatedDoc)
+                                            textFieldValue = TextFieldValue(text = cleanedText, selection = newSel)
+                                            triggerImmediateSave(updatedDoc = updatedDoc, selection = newSel, forceNewUndoStep = true)
                                             return@BasicTextField
                                         }
                                         prevLine.startsWith("• ") -> {
                                             val autoText = newText.substring(0, insIdx + 1) + "• " + newText.substring(insIdx + 1)
                                             val updatedDoc = adjustDocumentOnEdit(doc, autoText, activeBold, activeItalic)
+                                            val newSel = TextRange(insIdx + 3)
                                             doc = updatedDoc
-                                            textFieldValue = TextFieldValue(text = autoText, selection = TextRange(insIdx + 3))
-                                            triggerImmediateSave(updatedDoc = updatedDoc)
+                                            textFieldValue = TextFieldValue(text = autoText, selection = newSel)
+                                            triggerImmediateSave(updatedDoc = updatedDoc, selection = newSel, forceNewUndoStep = true)
                                             return@BasicTextField
                                         }
                                         prevLine.startsWith("☐ ") || prevLine.startsWith("☑ ") -> {
                                             val autoText = newText.substring(0, insIdx + 1) + "☐ " + newText.substring(insIdx + 1)
                                             val updatedDoc = adjustDocumentOnEdit(doc, autoText, activeBold, activeItalic)
+                                            val newSel = TextRange(insIdx + 3)
                                             doc = updatedDoc
-                                            textFieldValue = TextFieldValue(text = autoText, selection = TextRange(insIdx + 3))
-                                            triggerImmediateSave(updatedDoc = updatedDoc)
+                                            textFieldValue = TextFieldValue(text = autoText, selection = newSel)
+                                            triggerImmediateSave(updatedDoc = updatedDoc, selection = newSel, forceNewUndoStep = true)
                                             return@BasicTextField
                                         }
                                     }
@@ -1586,7 +2002,7 @@ fun NoteEditorScreen(
                                 val updatedDoc = adjustDocumentOnEdit(doc, newText, activeBold, activeItalic)
                                 doc = updatedDoc
                                 textFieldValue = incoming
-                                triggerImmediateSave(updatedDoc = updatedDoc)
+                                triggerImmediateSave(updatedDoc = updatedDoc, selection = incoming.selection)
                             } else {
                                 textFieldValue = incoming
                             }
@@ -1635,14 +2051,14 @@ fun NoteEditorScreen(
                         }
                         val updatedDoc = doc.copy(lineHeadings = updatedMap)
                         doc = updatedDoc
-                        triggerImmediateSave(updatedDoc = updatedDoc)
+                        triggerImmediateSave(updatedDoc = updatedDoc, forceNewUndoStep = true)
                     },
                     onToggleBold = {
                         val sel = textFieldValue.selection
                         if (!sel.collapsed) {
                             val updatedDoc = toggleSelectionInlineStyle(doc, sel, toggleBold = true)
                             doc = updatedDoc
-                            triggerImmediateSave(updatedDoc = updatedDoc)
+                            triggerImmediateSave(updatedDoc = updatedDoc, forceNewUndoStep = true)
                         } else {
                             activeBold = !activeBold
                         }
@@ -1652,7 +2068,7 @@ fun NoteEditorScreen(
                         if (!sel.collapsed) {
                             val updatedDoc = toggleSelectionInlineStyle(doc, sel, toggleItalic = true)
                             doc = updatedDoc
-                            triggerImmediateSave(updatedDoc = updatedDoc)
+                            triggerImmediateSave(updatedDoc = updatedDoc, forceNewUndoStep = true)
                         } else {
                             activeItalic = !activeItalic
                         }
@@ -1688,12 +2104,10 @@ fun NoteEditorScreen(
                     newText.length
                 )
                 val finalDoc = adjustedDoc.copy(spans = linkedSpans)
+                val newSel = TextRange(insertStart + displayLabel.length)
                 doc = finalDoc
-                textFieldValue = TextFieldValue(
-                    text = newText,
-                    selection = TextRange(insertStart + displayLabel.length)
-                )
-                triggerImmediateSave(updatedDoc = finalDoc)
+                textFieldValue = TextFieldValue(text = newText, selection = newSel)
+                triggerImmediateSave(updatedDoc = finalDoc, selection = newSel, forceNewUndoStep = true)
                 showLinkDialog = false
             }
         )
@@ -1812,6 +2226,138 @@ fun ToolbarIconButton(
             )
         }
     }
+}
+
+// ============================================================================
+// DIALOGS (NEW FOLDER, MOVE TO FOLDER, RENAME, DELETE, LINK, SETTINGS)
+// ============================================================================
+
+@Composable
+fun NewFolderDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var folderName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("New folder", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            OutlinedTextField(
+                value = folderName,
+                onValueChange = { folderName = it },
+                placeholder = { Text("Folder name") },
+                singleLine = true,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(
+                enabled = folderName.trim().isNotEmpty(),
+                onClick = { onConfirm(folderName) }
+            ) {
+                Text("Create", fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun DeleteFolderDialog(
+    folderName: String,
+    onDismiss: () -> Unit,
+    onConfirmDelete: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Remove folder?", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Text(
+                text = "“$folderName” will be removed. Your notes inside it will be kept in All Notes.",
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirmDelete) {
+                Text("Remove", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun MoveToFolderDialog(
+    currentFolder: String,
+    folders: List<String>,
+    onDismiss: () -> Unit,
+    onSelectFolder: (String) -> Unit,
+    onCreateNewFolder: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Move to folder", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Surface(
+                    color = if (currentFolder.isBlank()) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onSelectFolder("") }
+                ) {
+                    Text(
+                        text = "None (All Notes)",
+                        fontSize = 15.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                }
+
+                folders.forEach { folder ->
+                    val selected = currentFolder.equals(folder, ignoreCase = true)
+                    Surface(
+                        color = if (selected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onSelectFolder(folder) }
+                    ) {
+                        Text(
+                            text = folder,
+                            fontSize = 15.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = onCreateNewFolder) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("New folder")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
 }
 
 @Composable
