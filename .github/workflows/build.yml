@@ -65,25 +65,27 @@ jobs:
           </vector>
           EOF
 
-      - name: Ensure Persistent Release Keystore
+      - name: Ensure Valid Persistent Release Keystore
         run: |
           mkdir -p app
-          if [ ! -f app/keystore.jks ]; then
-            echo "Generating persistent release keystore..."
+          if ! keytool -list -keystore app/keystore.jks -storepass monolithPass2026 -alias monolith_key >/dev/null 2>&1; then
+            echo "Generating clean PKCS12 release keystore..."
+            rm -f app/keystore.jks
             keytool -genkeypair -v \
+              -storetype PKCS12 \
               -keystore app/keystore.jks \
               -alias monolith_key \
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -storepass monolithStorePass2026 \
-              -keypass monolithKeyPass2026 \
+              -storepass monolithPass2026 \
+              -keypass monolithPass2026 \
               -dname "CN=MonolithVault, OU=Mobile, O=MonolithLocal, L=Local, S=Local, C=IN"
             
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add app/keystore.jks
-            git commit -m "chore: persist android release keystore [skip ci]" || true
+            git commit -m "chore: persist valid PKCS12 android release keystore [skip ci]" || true
             git push || true
           fi
 
