@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- ZERO PERMISSIONS DECLARED: Strictly air-gapped & offline-only -->
-
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
-        android:label="Monolith"
+        android:label="Notes"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
