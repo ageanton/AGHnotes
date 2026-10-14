@@ -20,10 +20,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -49,11 +53,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -78,13 +91,118 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+
+// ============================================================================
+// DATA MODELS: TEXT, INLINE STYLES & VECTOR SKETCH STROKES
+// ============================================================================
 
 enum class HeadingStyle(val label: String) {
     TEXT("Text"),
     SMALL("Small heading"),
     LARGE("Large heading")
+}
+
+enum class DrawingTool(val label: String, val alpha: Float) {
+    PEN("Pen", 1.0f),
+    MARKER("Marker", 0.85f),
+    HIGHLIGHTER("Highlighter", 0.34f),
+    ERASER("Eraser", 1.0f)
+}
+
+data class DrawPoint(
+    val xDp: Float,
+    val yDp: Float
+)
+
+data class DrawStroke(
+    val tool: DrawingTool,
+    val colorIndex: Int,
+    val widthDp: Float,
+    val points: List<DrawPoint>
+)
+
+val InkPaletteSwatches = listOf(
+    Color(0xFF1F1F1D), // 0: Adaptive Ink (Charcoal on Light, Cream on Dark)
+    Color(0xFF2563EB), // 1: Cobalt Blue
+    Color(0xFFDC2626), // 2: Crimson Red
+    Color(0xFF16A34A), // 3: Forest Green
+    Color(0xFFD97706), // 4: Warm Amber
+    Color(0xFF7C3AED)  // 5: Royal Violet
+)
+
+fun resolveInkColor(colorIndex: Int, adaptiveDefault: Color): Color {
+    return if (colorIndex <= 0 || colorIndex >= InkPaletteSwatches.size) {
+        adaptiveDefault
+    } else {
+        InkPaletteSwatches[colorIndex]
+    }
+}
+
+fun strokeWidthForTool(tool: DrawingTool, sizeIndex: Int): Float {
+    return when (tool) {
+        DrawingTool.PEN -> when (sizeIndex) {
+            0 -> 2.2f
+            2 -> 7.0f
+            else -> 4.0f
+        }
+        DrawingTool.MARKER -> when (sizeIndex) {
+            0 -> 5.5f
+            2 -> 14.0f
+            else -> 9.0f
+        }
+        DrawingTool.HIGHLIGHTER -> when (sizeIndex) {
+            0 -> 14.0f
+            2 -> 28.0f
+            else -> 20.0f
+        }
+        DrawingTool.ERASER -> when (sizeIndex) {
+            0 -> 14.0f
+            2 -> 36.0f
+            else -> 24.0f
+        }
+    }
+}
+
+fun eraseStrokesAtPoint(
+    strokes: List<DrawStroke>,
+    xDp: Float,
+    yDp: Float,
+    radiusDp: Float
+): List<DrawStroke> {
+    if (strokes.isEmpty()) return strokes
+    val result = mutableListOf<DrawStroke>()
+    var changed = false
+
+    for (stroke in strokes) {
+        val hitThreshold = radiusDp + (stroke.widthDp * 0.5f)
+        val anyHit = stroke.points.any { pt ->
+            hypot(pt.xDp - xDp, pt.yDp - yDp) <= hitThreshold
+        }
+        if (!anyHit) {
+            result.add(stroke)
+        } else {
+            changed = true
+            var currentSegment = mutableListOf<DrawPoint>()
+            for (pt in stroke.points) {
+                if (hypot(pt.xDp - xDp, pt.yDp - yDp) > hitThreshold) {
+                    currentSegment.add(pt)
+                } else {
+                    if (currentSegment.isNotEmpty()) {
+                        result.add(stroke.copy(points = currentSegment))
+                        currentSegment = mutableListOf()
+                    }
+                }
+            }
+            if (currentSegment.isNotEmpty()) {
+                result.add(stroke.copy(points = currentSegment))
+            }
+        }
+    }
+    return if (changed) result else strokes
 }
 
 data class InlineStyleSpan(
@@ -98,13 +216,21 @@ data class InlineStyleSpan(
 data class RichNoteDocument(
     val text: String = "",
     val spans: List<InlineStyleSpan> = emptyList(),
-    val lineHeadings: Map<Int, HeadingStyle> = emptyMap()
+    val lineHeadings: Map<Int, HeadingStyle> = emptyMap(),
+    val strokes: List<DrawStroke> = emptyList(),
+    val canvasHeightDp: Int = 280
 ) {
     fun toPlainPreview(): String {
-        return text.lines()
+        val textPreview = text.lines()
             .map { it.removePrefix("• ").removePrefix("☐ ").removePrefix("☑ ").trim() }
             .filter { it.isNotEmpty() }
             .joinToString(" ")
+        return when {
+            textPreview.isNotEmpty() && strokes.isNotEmpty() -> "$textPreview  ·  Sketch"
+            textPreview.isNotEmpty() -> textPreview
+            strokes.isNotEmpty() -> "Handwritten sketch"
+            else -> ""
+        }
     }
 
     fun serialize(): String {
@@ -119,15 +245,34 @@ data class RichNoteDocument(
                     if (!span.link.isNullOrBlank()) put("l", span.link)
                 })
             }
+
         val headingsObj = JSONObject()
         lineHeadings.forEach { (lineIdx, style) ->
             if (style != HeadingStyle.TEXT) headingsObj.put(lineIdx.toString(), style.name)
         }
+
+        val strokesArray = JSONArray()
+        strokes.filter { it.points.isNotEmpty() }.forEach { stroke ->
+            val ptsArray = JSONArray()
+            stroke.points.forEach { pt ->
+                ptsArray.put(((pt.xDp * 10f).roundToInt() / 10f).toDouble())
+                ptsArray.put(((pt.yDp * 10f).roundToInt() / 10f).toDouble())
+            }
+            strokesArray.put(JSONObject().apply {
+                put("t", stroke.tool.name)
+                put("c", stroke.colorIndex)
+                put("w", stroke.widthDp.toDouble())
+                put("p", ptsArray)
+            })
+        }
+
         return JSONObject().apply {
             put("_format", "rich_v2")
             put("text", text)
             put("spans", spansArray)
             put("headings", headingsObj)
+            put("strokes", strokesArray)
+            put("canvasH", canvasHeightDp)
         }.toString()
     }
 
@@ -159,6 +304,7 @@ data class RichNoteDocument(
                                 }
                             }
                         }
+
                         val headings = mutableMapOf<Int, HeadingStyle>()
                         val headingsObj = obj.optJSONObject("headings")
                         if (headingsObj != null) {
@@ -171,7 +317,44 @@ data class RichNoteDocument(
                                 if (style != HeadingStyle.TEXT) headings[lineIdx] = style
                             }
                         }
-                        return RichNoteDocument(text = text, spans = spans, lineHeadings = headings)
+
+                        val strokes = mutableListOf<DrawStroke>()
+                        val strokesArray = obj.optJSONArray("strokes")
+                        if (strokesArray != null) {
+                            for (i in 0 until strokesArray.length()) {
+                                val stObj = strokesArray.getJSONObject(i)
+                                val tool = runCatching { DrawingTool.valueOf(stObj.optString("t", "PEN")) }
+                                    .getOrDefault(DrawingTool.PEN)
+                                val colorIdx = stObj.optInt("c", 0)
+                                val widthDp = stObj.optDouble("w", 4.0).toFloat()
+                                val ptsArr = stObj.optJSONArray("p")
+                                val pts = mutableListOf<DrawPoint>()
+                                if (ptsArr != null) {
+                                    var j = 0
+                                    while (j + 1 < ptsArr.length()) {
+                                        pts.add(
+                                            DrawPoint(
+                                                xDp = ptsArr.optDouble(j, 0.0).toFloat(),
+                                                yDp = ptsArr.optDouble(j + 1, 0.0).toFloat()
+                                            )
+                                        )
+                                        j += 2
+                                    }
+                                }
+                                if (pts.isNotEmpty()) {
+                                    strokes.add(DrawStroke(tool, colorIdx, widthDp, pts))
+                                }
+                            }
+                        }
+
+                        val canvasH = obj.optInt("canvasH", 280).coerceIn(180, 2400)
+                        return RichNoteDocument(
+                            text = text,
+                            spans = spans,
+                            lineHeadings = headings,
+                            strokes = strokes,
+                            canvasHeightDp = canvasH
+                        )
                     }
                 } catch (_: Exception) {}
             }
@@ -258,7 +441,7 @@ data class EditorSnapshot(
 )
 
 class SessionUndoQueue(initialSnapshot: EditorSnapshot) {
-    private val maxSteps = 25
+    private val maxSteps = 30
     val undoStack = mutableStateListOf(initialSnapshot)
     val redoStack = mutableStateListOf<EditorSnapshot>()
 
@@ -276,7 +459,10 @@ class SessionUndoQueue(initialSnapshot: EditorSnapshot) {
             val timeDiff = snapshot.timestamp - current.timestamp
             val charDiff = abs(snapshot.document.text.length - current.document.text.length)
             val sameLineCount = snapshot.document.text.count { it == '\n' } == current.document.text.count { it == '\n' }
-            if (timeDiff < 1100L && charDiff <= 12 && sameLineCount && current.document.lineHeadings == snapshot.document.lineHeadings) {
+            val sameStrokes = snapshot.document.strokes.size == current.document.strokes.size
+            if (timeDiff < 1100L && charDiff <= 12 && sameLineCount && sameStrokes &&
+                current.document.lineHeadings == snapshot.document.lineHeadings
+            ) {
                 undoStack[undoStack.lastIndex] = snapshot
                 return
             }
@@ -515,7 +701,7 @@ fun adjustDocumentOnEdit(
         map
     }
 
-    return RichNoteDocument(
+    return oldDoc.copy(
         text = newText,
         spans = normalizeSpans(updatedSpans, newText.length),
         lineHeadings = updatedHeadings
@@ -692,6 +878,10 @@ fun formatRelativeDate(millis: Long): String {
     }
 }
 
+// ============================================================================
+// MAIN ACTIVITY & THEME
+// ============================================================================
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -784,10 +974,9 @@ fun NotesApp(
     var activeNoteId by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
-    // Session-only Undo/Redo history map (exists strictly in RAM; disappears when app closes)
+    // Session-only Undo/Redo history map (lives strictly in RAM; cleared when app closes)
     val sessionUndoMap = remember { mutableMapOf<String, SessionUndoQueue>() }
 
-    // Modal states
     var noteToRename by remember { mutableStateOf<Note?>(null) }
     var noteToDelete by remember { mutableStateOf<Note?>(null) }
     var noteToMoveFolder by remember { mutableStateOf<Note?>(null) }
@@ -1017,6 +1206,10 @@ fun NotesApp(
     }
 }
 
+// ============================================================================
+// HOMEPAGE
+// ============================================================================
+
 @Composable
 fun NotesHomeScreen(
     notes: List<Note>,
@@ -1062,14 +1255,13 @@ fun NotesHomeScreen(
         ) {
             Spacer(Modifier.height(16.dp))
 
-            // App Header: Title on left, "New folder" + Settings on right
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Notes",
+                    text = "Folio",
                     fontSize = 30.sp,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = (-0.6).sp,
@@ -1115,7 +1307,6 @@ fun NotesHomeScreen(
 
             Spacer(Modifier.height(14.dp))
 
-            // Search Field
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
                 shape = RoundedCornerShape(10.dp),
@@ -1167,7 +1358,6 @@ fun NotesHomeScreen(
                 }
             }
 
-            // Minimal Folder Filter Row (shown when at least one folder exists)
             if (folders.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 Row(
@@ -1188,9 +1378,7 @@ fun NotesHomeScreen(
                         FolderPill(
                             label = folderName,
                             selected = isSelected,
-                            onClick = {
-                                onSelectFolder(if (isSelected) null else folderName)
-                            },
+                            onClick = { onSelectFolder(if (isSelected) null else folderName) },
                             onLongClick = { onRequestDeleteFolder(folderName) }
                         )
                     }
@@ -1225,7 +1413,7 @@ fun NotesHomeScreen(
                             text = if (searchQuery.isNotBlank()) {
                                 "Try a different search term."
                             } else {
-                                "Tap the + button below to start writing."
+                                "Tap the + button below to start writing or sketching."
                             },
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1284,7 +1472,6 @@ fun NotesHomeScreen(
             }
         }
 
-        // Bottom-Right Floating Plus (+) Button to Create a New Note
         FloatingActionButton(
             onClick = onCreateNote,
             shape = CircleShape,
@@ -1547,6 +1734,10 @@ fun NoteActionDropdownMenu(
     }
 }
 
+// ============================================================================
+// NOTE EDITOR SCREEN (WRITING + IN-NOTE SKETCHING STUDIO)
+// ============================================================================
+
 enum class SaveStatus { SAVED, SAVING }
 
 @Composable
@@ -1562,6 +1753,8 @@ fun NoteEditorScreen(
     onRequestMoveFolder: (Note) -> Unit,
     onRequestDelete: (Note) -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
+
     var title by remember(note.id) { mutableStateOf(note.title) }
     var doc by remember(note.id) { mutableStateOf(note.document) }
     var textFieldValue by remember(note.id) {
@@ -1579,16 +1772,22 @@ fun NoteEditorScreen(
 
     var saveStatus by remember { mutableStateOf(SaveStatus.SAVED) }
     var showFormattingBar by remember { mutableStateOf(false) }
+    var isDrawingMode by remember { mutableStateOf(false) }
     var activeBold by remember { mutableStateOf(false) }
     var activeItalic by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
     var showLinkDialog by remember { mutableStateOf(false) }
 
+    // Drawing studio state
+    var selectedTool by remember { mutableStateOf(DrawingTool.PEN) }
+    var selectedColorIndex by remember { mutableStateOf(0) }
+    var selectedSizeIndex by remember { mutableStateOf(1) } // 0=S, 1=M, 2=L
+
     val bodyFocusRequester = remember { FocusRequester() }
     val titleFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(note.id) {
-        if (note.title.isEmpty() && note.document.text.isEmpty()) {
+        if (note.title.isEmpty() && note.document.text.isEmpty() && note.document.strokes.isEmpty()) {
             delay(100)
             runCatching { titleFocusRequester.requestFocus() }
         }
@@ -1652,8 +1851,12 @@ fun NoteEditorScreen(
     }
 
     BackHandler {
-        onAutoSave(buildCurrentNote())
-        onBack()
+        if (isDrawingMode) {
+            isDrawingMode = false
+        } else {
+            onAutoSave(buildCurrentNote())
+            onBack()
+        }
     }
 
     val currentCursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
@@ -1680,7 +1883,7 @@ fun NoteEditorScreen(
         }
     }
 
-    val isToolbarVisible = showFormattingBar || !textFieldValue.selection.collapsed
+    val isTextToolbarVisible = !isDrawingMode && (showFormattingBar || !textFieldValue.selection.collapsed)
 
     val accentColor = MaterialTheme.colorScheme.primary
     val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1732,6 +1935,7 @@ fun NoteEditorScreen(
             .fillMaxSize()
             .imePadding()
     ) {
+        // Editor Header Bar
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
@@ -1768,11 +1972,9 @@ fun NoteEditorScreen(
                         modifier = Modifier.padding(end = 6.dp)
                     )
 
-                    // Session Undo Button
+                    // Session Undo Button (works for both typing and drawing!)
                     IconButton(
-                        onClick = {
-                            undoQueue.undo()?.let { applySnapshot(it) }
-                        },
+                        onClick = { undoQueue.undo()?.let { applySnapshot(it) } },
                         enabled = undoQueue.canUndo
                     ) {
                         Icon(
@@ -1786,9 +1988,7 @@ fun NoteEditorScreen(
 
                     // Session Redo Button
                     IconButton(
-                        onClick = {
-                            undoQueue.redo()?.let { applySnapshot(it) }
-                        },
+                        onClick = { undoQueue.redo()?.let { applySnapshot(it) } },
                         enabled = undoQueue.canRedo
                     ) {
                         Icon(
@@ -1800,11 +2000,36 @@ fun NoteEditorScreen(
                         )
                     }
 
-                    IconButton(onClick = { showFormattingBar = !showFormattingBar }) {
+                    // Toggle Sketch / Draw Mode Button
+                    IconButton(
+                        onClick = {
+                            isDrawingMode = !isDrawingMode
+                            if (isDrawingMode) {
+                                showFormattingBar = false
+                                focusManager.clearFocus()
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Brush,
+                            contentDescription = "Draw or sketch",
+                            tint = if (isDrawingMode) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // Toggle Text Formatting Bar Button (Aa)
+                    IconButton(
+                        onClick = {
+                            if (isDrawingMode) isDrawingMode = false
+                            showFormattingBar = !showFormattingBar
+                        }
+                    ) {
                         Icon(
                             imageVector = Icons.Default.FormatSize,
                             contentDescription = "Format text",
-                            tint = if (isToolbarVisible) MaterialTheme.colorScheme.primary
+                            tint = if (isTextToolbarVisible) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
                         )
@@ -1844,6 +2069,7 @@ fun NoteEditorScreen(
             }
         }
 
+        // Main Writing & Sketching Scroll Area
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -1854,7 +2080,8 @@ fun NoteEditorScreen(
                 modifier = Modifier
                     .widthIn(max = 680.dp)
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    // Lock page scrolling while actively drawing so strokes never scroll the page by accident
+                    .verticalScroll(rememberScrollState(), enabled = !isDrawingMode)
                     .padding(horizontal = 24.dp, vertical = 12.dp)
             ) {
                 if (note.folder.isNotBlank() || hasFolders) {
@@ -1881,6 +2108,7 @@ fun NoteEditorScreen(
                     Spacer(Modifier.height(6.dp))
                 }
 
+                // Title Field
                 Box(modifier = Modifier.fillMaxWidth()) {
                     if (title.isEmpty()) {
                         Text(
@@ -1920,10 +2148,39 @@ fun NoteEditorScreen(
 
                 Spacer(Modifier.height(18.dp))
 
+                // In-Note Sketchpad Canvas (shown whenever Drawing Mode is active or the note contains a sketch)
+                if (isDrawingMode || doc.strokes.isNotEmpty()) {
+                    InNoteSketchCanvas(
+                        strokes = doc.strokes,
+                        canvasHeightDp = doc.canvasHeightDp,
+                        isDrawingMode = isDrawingMode,
+                        selectedTool = selectedTool,
+                        selectedColorIndex = selectedColorIndex,
+                        selectedSizeIndex = selectedSizeIndex,
+                        onActivateDrawingMode = {
+                            isDrawingMode = true
+                            showFormattingBar = false
+                            focusManager.clearFocus()
+                        },
+                        onCommitStrokes = { updatedStrokes ->
+                            val updatedDoc = doc.copy(strokes = updatedStrokes)
+                            doc = updatedDoc
+                            triggerImmediateSave(updatedDoc = updatedDoc, forceNewUndoStep = true)
+                        },
+                        onExpandCanvas = {
+                            val updatedDoc = doc.copy(canvasHeightDp = (doc.canvasHeightDp + 180).coerceAtMost(2400))
+                            doc = updatedDoc
+                            triggerImmediateSave(updatedDoc = updatedDoc, recordInUndo = false)
+                        }
+                    )
+                    Spacer(Modifier.height(18.dp))
+                }
+
+                // Body WYSIWYG Text Editor
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 420.dp)
+                        .defaultMinSize(minHeight = 360.dp)
                 ) {
                     if (textFieldValue.text.isEmpty()) {
                         Text(
@@ -1937,6 +2194,7 @@ fun NoteEditorScreen(
                     BasicTextField(
                         value = textFieldValue,
                         onValueChange = { incoming ->
+                            if (isDrawingMode) isDrawingMode = false
                             val oldText = textFieldValue.text
                             val newText = incoming.text
 
@@ -2017,7 +2275,7 @@ fun NoteEditorScreen(
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = 420.dp)
+                            .defaultMinSize(minHeight = 360.dp)
                             .focusRequester(bodyFocusRequester)
                     )
                 }
@@ -2026,8 +2284,33 @@ fun NoteEditorScreen(
             }
         }
 
+        // Bottom Studio Bar: Either Drawing Tools or Text Formatting Toolbar
         AnimatedVisibility(
-            visible = isToolbarVisible,
+            visible = isDrawingMode,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            DrawingToolbar(
+                selectedTool = selectedTool,
+                selectedColorIndex = selectedColorIndex,
+                selectedSizeIndex = selectedSizeIndex,
+                hasStrokes = doc.strokes.isNotEmpty(),
+                onSelectTool = { selectedTool = it },
+                onSelectColor = { selectedColorIndex = it },
+                onSelectSize = { selectedSizeIndex = it },
+                onClearCanvas = {
+                    if (doc.strokes.isNotEmpty()) {
+                        val updatedDoc = doc.copy(strokes = emptyList())
+                        doc = updatedDoc
+                        triggerImmediateSave(updatedDoc = updatedDoc, forceNewUndoStep = true)
+                    }
+                },
+                onDoneDrawing = { isDrawingMode = false }
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isTextToolbarVisible,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
         ) {
@@ -2113,6 +2396,391 @@ fun NoteEditorScreen(
         )
     }
 }
+
+// ============================================================================
+// IN-NOTE SKETCHPAD CANVAS & DRAWING TOOLBAR
+// ============================================================================
+
+@Composable
+fun InNoteSketchCanvas(
+    strokes: List<DrawStroke>,
+    canvasHeightDp: Int,
+    isDrawingMode: Boolean,
+    selectedTool: DrawingTool,
+    selectedColorIndex: Int,
+    selectedSizeIndex: Int,
+    onActivateDrawingMode: () -> Unit,
+    onCommitStrokes: (List<DrawStroke>) -> Unit,
+    onExpandCanvas: () -> Unit
+) {
+    val density = LocalDensity.current.density
+    val adaptiveInkColor = MaterialTheme.colorScheme.onBackground
+    val borderColor = if (isDrawingMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+    else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+
+    // Working strokes during an active finger/stylus gesture
+    var workingStrokes by remember(strokes) { mutableStateOf(strokes) }
+    var activeStrokePoints by remember { mutableStateOf<List<DrawPoint>>(emptyList()) }
+    var eraserCursorDp by remember { mutableStateOf<DrawPoint?>(null) }
+
+    val latestStrokes by rememberUpdatedState(workingStrokes)
+    val latestTool by rememberUpdatedState(selectedTool)
+    val latestColorIndex by rememberUpdatedState(selectedColorIndex)
+    val latestSizeIndex by rememberUpdatedState(selectedSizeIndex)
+    val latestOnCommit by rememberUpdatedState(onCommitStrokes)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .border(
+                width = if (isDrawingMode) 1.5.dp else 0.8.dp,
+                color = borderColor,
+                shape = RoundedCornerShape(12.dp)
+            )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(canvasHeightDp.dp)
+                .clipToBounds()
+                .then(
+                    if (!isDrawingMode) {
+                        Modifier.clickable { onActivateDrawingMode() }
+                    } else {
+                        Modifier.pointerInput(Unit) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+
+                                val startXDp = down.position.x / density
+                                val startYDp = down.position.y / density
+                                val tool = latestTool
+                                val sizeIdx = latestSizeIndex
+                                val widthDp = strokeWidthForTool(tool, sizeIdx)
+
+                                if (tool == DrawingTool.ERASER) {
+                                    eraserCursorDp = DrawPoint(startXDp, startYDp)
+                                    workingStrokes = eraseStrokesAtPoint(
+                                        strokes = latestStrokes,
+                                        xDp = startXDp,
+                                        yDp = startYDp,
+                                        radiusDp = widthDp * 0.65f
+                                    )
+                                } else {
+                                    activeStrokePoints = listOf(DrawPoint(startXDp, startYDp))
+                                }
+
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                        ?: event.changes.firstOrNull()
+                                    if (change != null && change.pressed) {
+                                        change.consume()
+                                        val ptXDp = change.position.x / density
+                                        val ptYDp = change.position.y / density
+                                        if (tool == DrawingTool.ERASER) {
+                                            eraserCursorDp = DrawPoint(ptXDp, ptYDp)
+                                            workingStrokes = eraseStrokesAtPoint(
+                                                strokes = latestStrokes,
+                                                xDp = ptXDp,
+                                                yDp = ptYDp,
+                                                radiusDp = widthDp * 0.65f
+                                            )
+                                        } else {
+                                            val lastPt = activeStrokePoints.lastOrNull()
+                                            if (lastPt == null || hypot(ptXDp - lastPt.xDp, ptYDp - lastPt.yDp) >= 1.2f) {
+                                                activeStrokePoints = activeStrokePoints + DrawPoint(ptXDp, ptYDp)
+                                            }
+                                        }
+                                    }
+                                } while (event.changes.any { it.pressed })
+
+                                eraserCursorDp = null
+                                if (tool == DrawingTool.ERASER) {
+                                    latestOnCommit(workingStrokes)
+                                } else if (activeStrokePoints.isNotEmpty()) {
+                                    val newStroke = DrawStroke(
+                                        tool = tool,
+                                        colorIndex = latestColorIndex,
+                                        widthDp = widthDp,
+                                        points = activeStrokePoints
+                                    )
+                                    val committed = latestStrokes + newStroke
+                                    activeStrokePoints = emptyList()
+                                    workingStrokes = committed
+                                    latestOnCommit(committed)
+                                }
+                            }
+                        }
+                    }
+                )
+        ) {
+            if (workingStrokes.isEmpty() && activeStrokePoints.isEmpty()) {
+                Text(
+                    text = if (isDrawingMode) "Draw or scribble here with your finger or stylus…"
+                    else "Tap to sketch",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                fun drawSingleStroke(stroke: DrawStroke) {
+                    val pts = stroke.points
+                    if (pts.isEmpty()) return
+                    val baseColor = resolveInkColor(stroke.colorIndex, adaptiveInkColor)
+                    val paintColor = baseColor.copy(alpha = stroke.tool.alpha)
+                    val strokePx = stroke.widthDp * density
+
+                    if (pts.size == 1) {
+                        drawCircle(
+                            color = paintColor,
+                            radius = strokePx / 2f,
+                            center = Offset(pts[0].xDp * density, pts[0].yDp * density)
+                        )
+                    } else {
+                        val path = Path().apply {
+                            moveTo(pts[0].xDp * density, pts[0].yDp * density)
+                            for (i in 1 until pts.size) {
+                                val prev = pts[i - 1]
+                                val cur = pts[i]
+                                val midX = (prev.xDp + cur.xDp) * 0.5f * density
+                                val midY = (prev.yDp + cur.yDp) * 0.5f * density
+                                quadraticTo(
+                                    prev.xDp * density,
+                                    prev.yDp * density,
+                                    midX,
+                                    midY
+                                )
+                            }
+                            val last = pts.last()
+                            lineTo(last.xDp * density, last.yDp * density)
+                        }
+                        drawPath(
+                            path = path,
+                            color = paintColor,
+                            style = Stroke(
+                                width = strokePx,
+                                cap = if (stroke.tool == DrawingTool.HIGHLIGHTER) StrokeCap.Square else StrokeCap.Round,
+                                join = StrokeJoin.Round
+                            )
+                        )
+                    }
+                }
+
+                workingStrokes.forEach { drawSingleStroke(it) }
+
+                if (activeStrokePoints.isNotEmpty() && selectedTool != DrawingTool.ERASER) {
+                    drawSingleStroke(
+                        DrawStroke(
+                            tool = selectedTool,
+                            colorIndex = selectedColorIndex,
+                            widthDp = strokeWidthForTool(selectedTool, selectedSizeIndex),
+                            points = activeStrokePoints
+                        )
+                    )
+                }
+
+                eraserCursorDp?.let { cursor ->
+                    val radiusPx = strokeWidthForTool(DrawingTool.ERASER, selectedSizeIndex) * 0.65f * density
+                    drawCircle(
+                        color = adaptiveInkColor.copy(alpha = 0.28f),
+                        radius = radiusPx,
+                        center = Offset(cursor.xDp * density, cursor.yDp * density),
+                        style = Stroke(width = 1.5f * density)
+                    )
+                }
+            }
+        }
+
+        // Subtle Footer Bar inside the Sketchpad
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (isDrawingMode) "Drawing mode active" else "Tap sketch to edit",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (isDrawingMode) {
+                Text(
+                    text = "+ Expand canvas",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onExpandCanvas() }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun DrawingToolbar(
+    selectedTool: DrawingTool,
+    selectedColorIndex: Int,
+    selectedSizeIndex: Int,
+    hasStrokes: Boolean,
+    onSelectTool: (DrawingTool) -> Unit,
+    onSelectColor: (Int) -> Unit,
+    onSelectSize: (Int) -> Unit,
+    onClearCanvas: () -> Unit,
+    onDoneDrawing: () -> Unit
+) {
+    val adaptiveInkColor = MaterialTheme.colorScheme.onBackground
+
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Row 1: Pens (Pen, Marker, Highlighter), Eraser, Clear, Done
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 600.dp)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                DrawingTool.entries.forEach { tool ->
+                    val active = selectedTool == tool
+                    Surface(
+                        color = if (active) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onSelectTool(tool) }
+                    ) {
+                        Text(
+                            text = tool.label,
+                            fontSize = 13.sp,
+                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                            color = if (active) MaterialTheme.colorScheme.onPrimary
+                            else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
+                }
+
+                if (hasStrokes) {
+                    TextButton(
+                        onClick = onClearCanvas,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "Clear",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                TextButton(
+                    onClick = onDoneDrawing,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Done",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Row 2: Ink Color Swatches & Stroke Thickness (S / M / L)
+            Row(
+                modifier = Modifier
+                    .widthIn(max = 600.dp)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (selectedTool != DrawingTool.ERASER) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InkPaletteSwatches.forEachIndexed { idx, swatch ->
+                            val displayColor = if (idx == 0) adaptiveInkColor else swatch
+                            val isSelected = selectedColorIndex == idx
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(displayColor)
+                                    .border(
+                                        width = if (isSelected) 2.5.dp else 1.dp,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.outline,
+                                        shape = CircleShape
+                                    )
+                                    .clickable { onSelectColor(idx) }
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.width(4.dp))
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf("S", "M", "L").forEachIndexed { idx, sizeLabel ->
+                        val active = selectedSizeIndex == idx
+                        Surface(
+                            color = if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = CircleShape,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .clickable { onSelectSize(idx) }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = sizeLabel,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (active) MaterialTheme.colorScheme.onPrimary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// TEXT FORMATTING TOOLBAR
+// ============================================================================
 
 @Composable
 fun FormattingToolbar(
