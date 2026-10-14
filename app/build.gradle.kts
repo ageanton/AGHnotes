@@ -19,9 +19,9 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("keystore.jks")
-            storePassword = "monolithStorePass2026"
+            storePassword = "monolithPass2026"
             keyAlias = "monolith_key"
-            keyPassword = "monolithKeyPass2026"
+            keyPassword = "monolithPass2026"
         }
     }
 
