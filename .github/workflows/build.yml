@@ -1,4 +1,4 @@
-name: Build Monolith Android APK
+name: Build Folio Android APK
 
 on:
   push:
@@ -22,100 +22,1072 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generate Gradle Configs & Adaptive Vector Icon
+      - name: Generate Project Files (Manifest, Gradle, Vector Icon)
         run: |
           cat << 'EOF' > settings.gradle.kts
           pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
           }
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
+              repositories { google(); mavenCentral() }
           }
           rootProject.name = "FolioNotes"
           include(":app")
           EOF
 
-          printf "org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nandroid.nonTransitiveRClass=true\n" > gradle.properties
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
 
           mkdir -p app/src/main/res/drawable
-          cat << 'EOF' | sed 's/^          //' > app/src/main/res/drawable/ic_launcher.xml
+          cat << 'EOF' > app/src/main/res/drawable/ic_launcher.xml
           <?xml version="1.0" encoding="utf-8"?>
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp"
-              android:height="108dp"
-              android:viewportWidth="108"
-              android:viewportHeight="108">
-              <path
-                  android:fillColor="#191918"
-                  android:pathData="M0,0h108v108h-108z"/>
-              <path
-                  android:fillColor="#FAF9F5"
-                  android:pathData="M31,24h36l10,10v50c0,2.2 -1.8,4 -4,4H31c-2.2,0 -4,-1.8 -4,-4V28c0,-2.2 1.8,-4 4,-4z"/>
-              <path
-                  android:fillColor="#E6E4DD"
-                  android:pathData="M67,24v10h10z"/>
-              <path
-                  android:fillColor="#191918"
-                  android:pathData="M36,42h24v3.2h-24zM36,51h18v3.2h-18z"/>
-              <path
-                  android:fillColor="#2563EB"
-                  android:pathData="M36,68 C42,61 48,73 56,64 C60,60 64,62 68,58 L70,61 C65,65 61,64 57,68 C48,77 42,65 36,72 Z"/>
-              <path
-                  android:fillColor="#D97706"
-                  android:pathData="M62,56 L77,41 L82,46 L67,61 Z"/>
-              <path
-                  android:fillColor="#191918"
-                  android:pathData="M59,64 L62,56 L67,61 Z"/>
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#191918" android:pathData="M 54 0 C 83.8 0 108 24.2 108 54 C 108 83.8 83.8 108 54 108 C 24.2 108 0 83.8 0 54 Z"/>
+              <path android:fillColor="#FAF9F5" android:pathData="M31,24h36l10,10v50c0,2.2 -1.8,4 -4,4H31c-2.2,0 -4,-1.8 -4,-4V28c0,-2.2 1.8,-4 4,-4z"/>
+              <path android:fillColor="#E6E4DD" android:pathData="M67,24v10h10z"/>
+              <path android:fillColor="#191918" android:pathData="M36,42h24v3.2h-24zM36,51h18v3.2h-18z"/>
+              <path android:fillColor="#2563EB" android:pathData="M36,68 C42,61 48,73 56,64 C60,60 64,62 68,58 L70,61 C65,65 61,64 57,68 C48,77 42,65 36,72 Z"/>
+              <path android:fillColor="#D97706" android:pathData="M62,56 L77,41 L82,46 L67,61 Z"/>
+              <path android:fillColor="#191918" android:pathData="M59,64 L62,56 L67,61 Z"/>
           </vector>
           EOF
 
-      - name: Ensure Valid Persistent Release Keystore
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:allowBackup="false"
+                  android:icon="@drawable/ic_launcher"
+                  android:roundIcon="@drawable/ic_launcher"
+                  android:label="Folio"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.7.2"
+              id("org.jetbrains.kotlin.android") version "2.0.21"
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
+          }
+          android {
+              namespace = "com.local.monolith"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.local.monolith"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 2
+                  versionName = "2.0.0"
+              }
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("keystore.jks")
+                      storePassword = "monolithPass2026"
+                      keyAlias = "monolith_key"
+                      keyPassword = "monolithPass2026"
+                  }
+              }
+              buildTypes {
+                  release {
+                      isMinifyEnabled = true
+                      isShrinkResources = true
+                      signingConfig = signingConfigs.getByName("release")
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+                  }
+                  debug { signingConfig = signingConfigs.getByName("release") }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              buildFeatures { compose = true }
+              packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+          }
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
+              implementation(composeBom)
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-compose:1.9.3")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-graphics")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-core")
+              implementation("androidx.compose.material:material-icons-extended")
+          }
+          EOF
+
+      - name: Generate Kotlin Source Code (MainActivity.kt)
         run: |
-          mkdir -p app
-          if ! keytool -list -keystore app/keystore.jks -storepass monolithPass2026 -alias monolith_key >/dev/null 2>&1; then
-            echo "Generating clean PKCS12 release keystore..."
-            rm -f app/keystore.jks
-            keytool -genkeypair -v \
-              -storetype PKCS12 \
-              -keystore app/keystore.jks \
-              -alias monolith_key \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass monolithPass2026 \
-              -keypass monolithPass2026 \
-              -dname "CN=MonolithVault, OU=Mobile, O=MonolithLocal, L=Local, S=Local, C=IN"
-            
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add app/keystore.jks
-            git commit -m "chore: persist valid PKCS12 android release keystore [skip ci]" || true
-            git push || true
-          fi
+          mkdir -p app/src/main/java/com/local/monolith
+          cat << 'EOF' > app/src/main/java/com/local/monolith/MainActivity.kt
+          @file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+          package com.local.monolith
+
+          import android.content.ContentValues
+          import android.content.Context
+          import android.content.SharedPreferences
+          import android.database.sqlite.SQLiteDatabase
+          import android.database.sqlite.SQLiteOpenHelper
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.BackHandler
+          import androidx.activity.compose.setContent
+          import androidx.activity.enableEdgeToEdge
+          import androidx.compose.animation.*
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.ExperimentalFoundationApi
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.combinedClickable
+          import androidx.compose.foundation.gestures.awaitEachGesture
+          import androidx.compose.foundation.gestures.awaitFirstDown
+          import androidx.compose.foundation.horizontalScroll
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.BasicTextField
+          import androidx.compose.foundation.text.KeyboardActions
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.automirrored.filled.*
+          import androidx.compose.material.icons.filled.*
+          import androidx.compose.material.icons.outlined.Folder
+          import androidx.compose.material.icons.outlined.PushPin
+          import androidx.compose.material.icons.outlined.Settings
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.draw.clipToBounds
+          import androidx.compose.ui.focus.FocusRequester
+          import androidx.compose.ui.focus.focusRequester
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.SolidColor
+          import androidx.compose.ui.graphics.StrokeCap
+          import androidx.compose.ui.graphics.StrokeJoin
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.vector.ImageVector
+          import androidx.compose.ui.input.pointer.pointerInput
+          import androidx.compose.ui.platform.LocalDensity
+          import androidx.compose.ui.platform.LocalFocusManager
+          import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.SpanStyle
+          import androidx.compose.ui.text.TextRange
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.buildAnnotatedString
+          import androidx.compose.ui.text.font.FontStyle
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.*
+          import androidx.compose.ui.text.style.TextDecoration
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.text.SimpleDateFormat
+          import java.util.*
+          import kotlin.math.*
+
+          enum class HeadingStyle(val label: String) { TEXT("Text"), SMALL("Small heading"), LARGE("Large heading") }
+          enum class DrawingTool(val label: String, val alpha: Float) { PEN("Pen", 1.0f), MARKER("Marker", 0.85f), HIGHLIGHTER("Highlighter", 0.34f), ERASER("Eraser", 1.0f) }
+
+          data class DrawPoint(val xDp: Float, val yDp: Float)
+          data class DrawStroke(val tool: DrawingTool, val colorIndex: Int, val widthDp: Float, val points: List<DrawPoint>)
+
+          val InkPaletteSwatches = listOf(
+              Color(0xFF1F1F1D), Color(0xFF2563EB), Color(0xFFDC2626),
+              Color(0xFF16A34A), Color(0xFFD97706), Color(0xFF7C3AED)
+          )
+          val SizePresetLabels = listOf("XS", "S", "M", "L", "XL")
+
+          fun resolveInkColor(colorIndex: Int, adaptiveDefault: Color) = if (colorIndex in InkPaletteSwatches.indices) InkPaletteSwatches[colorIndex] else adaptiveDefault
+
+          fun strokeWidthForTool(tool: DrawingTool, sizeIndex: Int): Float {
+              val idx = sizeIndex.coerceIn(0, 4)
+              return when (tool) {
+                  DrawingTool.PEN -> floatArrayOf(1.4f, 2.4f, 4.0f, 6.5f, 10.0f)[idx]
+                  DrawingTool.MARKER -> floatArrayOf(3.5f, 5.5f, 8.5f, 13.0f, 18.0f)[idx]
+                  DrawingTool.HIGHLIGHTER -> floatArrayOf(10.0f, 14.0f, 20.0f, 26.0f, 34.0f)[idx]
+                  DrawingTool.ERASER -> floatArrayOf(5.0f, 10.0f, 18.0f, 30.0f, 48.0f)[idx]
+              }
+          }
+
+          fun interpolatePoints(from: DrawPoint, to: DrawPoint, stepDp: Float = 1.5f): List<DrawPoint> {
+              val dist = hypot(to.xDp - from.xDp, to.yDp - from.yDp)
+              if (dist <= stepDp) return listOf(to)
+              val steps = ceil(dist / stepDp).toInt().coerceIn(1, 120)
+              return (1..steps).map { i ->
+                  val t = i.toFloat() / steps
+                  DrawPoint(from.xDp + (to.xDp - from.xDp) * t, from.yDp + (to.yDp - from.yDp) * t)
+              }
+          }
+
+          fun distancePointToSegmentDp(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
+              val lenSq = (bx - ax)*(bx - ax) + (by - ay)*(by - ay)
+              if (lenSq <= 0.0001f) return hypot(px - ax, py - ay)
+              val t = (((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / lenSq).coerceIn(0f, 1f)
+              return hypot(px - (ax + t * (bx - ax)), py - (ay + t * (by - ay)))
+          }
+
+          fun eraseStrokesAlongSegment(strokes: List<DrawStroke>, fromPt: DrawPoint, toPt: DrawPoint, eraserRadiusDp: Float): List<DrawStroke> {
+              if (strokes.isEmpty()) return strokes
+              val result = mutableListOf<DrawStroke>()
+              var anyChanged = false
+              for (stroke in strokes) {
+                  val threshold = eraserRadiusDp + (stroke.widthDp * 0.45f)
+                  val densePoints = mutableListOf<DrawPoint>()
+                  stroke.points.forEach { pt ->
+                      if (densePoints.isEmpty()) densePoints.add(pt)
+                      else densePoints.addAll(interpolatePoints(densePoints.last(), pt, 2.0f))
+                  }
+                  if (!densePoints.any { distancePointToSegmentDp(it.xDp, it.yDp, fromPt.xDp, fromPt.yDp, toPt.xDp, toPt.yDp) <= threshold }) {
+                      result.add(stroke)
+                  } else {
+                      anyChanged = true
+                      var currentSegment = mutableListOf<DrawPoint>()
+                      for (pt in densePoints) {
+                          if (distancePointToSegmentDp(pt.xDp, pt.yDp, fromPt.xDp, fromPt.yDp, toPt.xDp, toPt.yDp) > threshold) {
+                              currentSegment.add(pt)
+                          } else if (currentSegment.isNotEmpty()) {
+                              result.add(stroke.copy(points = currentSegment))
+                              currentSegment = mutableListOf()
+                          }
+                      }
+                      if (currentSegment.isNotEmpty()) result.add(stroke.copy(points = currentSegment))
+                  }
+              }
+              return if (anyChanged) result else strokes
+          }
+
+          data class InlineStyleSpan(val start: Int, val end: Int, val bold: Boolean = false, val italic: Boolean = false, val link: String? = null)
+          data class RichNoteDocument(
+              val text: String = "", val spans: List<InlineStyleSpan> = emptyList(),
+              val lineHeadings: Map<Int, HeadingStyle> = emptyMap(), val strokes: List<DrawStroke> = emptyList(), val canvasHeightDp: Int = 300
+          ) {
+              fun toPlainPreview(): String {
+                  val preview = text.lines().map { it.removePrefix("• ").removePrefix("☐ ").removePrefix("☑ ").trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+                  return when {
+                      preview.isNotEmpty() && strokes.isNotEmpty() -> "$preview  ·  Sketch"
+                      preview.isNotEmpty() -> preview
+                      strokes.isNotEmpty() -> "Handwritten sketch"
+                      else -> ""
+                  }
+              }
+              fun serialize(): String {
+                  val spansArray = JSONArray()
+                  spans.filter { it.end > it.start && (it.bold || it.italic || !it.link.isNullOrBlank()) }.forEach { span ->
+                      spansArray.put(JSONObject().apply {
+                          put("s", span.start); put("e", span.end); if (span.bold) put("b", true); if (span.italic) put("i", true); if (!span.link.isNullOrBlank()) put("l", span.link)
+                      })
+                  }
+                  val headingsObj = JSONObject()
+                  lineHeadings.forEach { (idx, style) -> if (style != HeadingStyle.TEXT) headingsObj.put(idx.toString(), style.name) }
+                  val strokesArray = JSONArray()
+                  strokes.filter { it.points.isNotEmpty() }.forEach { stroke ->
+                      val ptsArray = JSONArray()
+                      stroke.points.forEach { pt -> ptsArray.put(((pt.xDp * 10f).roundToInt() / 10f).toDouble()); ptsArray.put(((pt.yDp * 10f).roundToInt() / 10f).toDouble()) }
+                      strokesArray.put(JSONObject().apply { put("t", stroke.tool.name); put("c", stroke.colorIndex); put("w", stroke.widthDp.toDouble()); put("p", ptsArray) })
+                  }
+                  return JSONObject().apply { put("_format", "rich_v2"); put("text", text); put("spans", spansArray); put("headings", headingsObj); put("strokes", strokesArray); put("canvasH", canvasHeightDp) }.toString()
+              }
+              companion object {
+                  fun deserialize(rawContent: String): RichNoteDocument {
+                      if (rawContent.isBlank()) return RichNoteDocument()
+                      if (rawContent.startsWith("{")) {
+                          try {
+                              val obj = JSONObject(rawContent)
+                              if (obj.optString("_format") == "rich_v2") {
+                                  val spans = mutableListOf<InlineStyleSpan>()
+                                  obj.optJSONArray("spans")?.let { arr ->
+                                      for (i in 0 until arr.length()) {
+                                          val sObj = arr.getJSONObject(i)
+                                          val start = sObj.optInt("s", 0); val end = sObj.optInt("e", 0)
+                                          if (end > start) spans.add(InlineStyleSpan(start, end, sObj.optBoolean("b"), sObj.optBoolean("i"), sObj.optString("l").ifBlank { null }))
+                                      }
+                                  }
+                                  val headings = mutableMapOf<Int, HeadingStyle>()
+                                  obj.optJSONObject("headings")?.let { hObj ->
+                                      val keys = hObj.keys()
+                                      while (keys.hasNext()) {
+                                          val k = keys.next(); val idx = k.toIntOrNull() ?: continue
+                                          val style = runCatching { HeadingStyle.valueOf(hObj.optString(k)) }.getOrDefault(HeadingStyle.TEXT)
+                                          if (style != HeadingStyle.TEXT) headings[idx] = style
+                                      }
+                                  }
+                                  val strokes = mutableListOf<DrawStroke>()
+                                  obj.optJSONArray("strokes")?.let { arr ->
+                                      for (i in 0 until arr.length()) {
+                                          val stObj = arr.getJSONObject(i)
+                                          val pts = mutableListOf<DrawPoint>()
+                                          stObj.optJSONArray("p")?.let { pArr ->
+                                              for (j in 0 until pArr.length() step 2) pts.add(DrawPoint(pArr.optDouble(j).toFloat(), pArr.optDouble(j+1).toFloat()))
+                                          }
+                                          if (pts.isNotEmpty()) strokes.add(DrawStroke(runCatching { DrawingTool.valueOf(stObj.optString("t")) }.getOrDefault(DrawingTool.PEN), stObj.optInt("c"), stObj.optDouble("w").toFloat(), pts))
+                                      }
+                                  }
+                                  return RichNoteDocument(obj.optString("text", ""), spans, headings, strokes, obj.optInt("canvasH", 300))
+                              }
+                          } catch (_: Exception) {}
+                      }
+                      return RichNoteDocument()
+                  }
+              }
+          }
+
+          data class Note(val id: String = UUID.randomUUID().toString(), val title: String, val document: RichNoteDocument, val folder: String = "", val isPinned: Boolean = false, val isTrashed: Boolean = false, val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis()) {
+              val previewText: String get() = document.toPlainPreview()
+          }
+
+          fun normalizeFolderPath(path: String) = path.split("/").map { it.trim() }.filter { it.isNotEmpty() }.joinToString("/")
+          fun parentFolderPath(path: String) = normalizeFolderPath(path).let { val i = it.lastIndexOf('/'); if (i == -1) "" else it.substring(0, i) }
+          fun folderDisplayName(path: String) = normalizeFolderPath(path).let { val i = it.lastIndexOf('/'); if (i == -1) it else it.substring(i + 1) }
+          fun expandAllFolderPaths(rawPaths: Collection<String>): List<String> {
+              val set = linkedSetOf<String>()
+              rawPaths.forEach { raw ->
+                  var cur = ""
+                  raw.split("/").map { it.trim() }.filter { it.isNotEmpty() }.forEach { part -> cur = if (cur.isEmpty()) part else "$cur/$part"; set.add(cur) }
+              }
+              return set.toList().sortedBy { it.lowercase() }
+          }
+          fun directSubfoldersOf(parentPath: String, allFolders: List<String>): List<String> {
+              val norm = normalizeFolderPath(parentPath)
+              return allFolders.filter { parentFolderPath(it).equals(norm, ignoreCase = true) && !it.equals(norm, ignoreCase = true) }.sortedBy { folderDisplayName(it).lowercase() }
+          }
+
+          data class EditorSnapshot(val title: String, val document: RichNoteDocument, val selection: TextRange, val timestamp: Long = System.currentTimeMillis())
+          class SessionUndoQueue(initialSnapshot: EditorSnapshot) {
+              val undoStack = mutableStateListOf(initialSnapshot)
+              val redoStack = mutableStateListOf<EditorSnapshot>()
+              val canUndo: Boolean get() = undoStack.size > 1
+              val canRedo: Boolean get() = redoStack.isNotEmpty()
+              fun recordChange(snapshot: EditorSnapshot, forceNewStep: Boolean = false) {
+                  val current = undoStack.lastOrNull()
+                  if (current?.title == snapshot.title && current.document == snapshot.document) return
+                  redoStack.clear()
+                  if (!forceNewStep && current != null && undoStack.size > 1 && snapshot.timestamp - current.timestamp < 1100L &&
+                      abs(snapshot.document.text.length - current.document.text.length) <= 12 && snapshot.document.text.count { it == '\n' } == current.document.text.count { it == '\n' } &&
+                      snapshot.document.strokes.size == current.document.strokes.size && current.document.lineHeadings == snapshot.document.lineHeadings
+                  ) { undoStack[undoStack.lastIndex] = snapshot; return }
+                  undoStack.add(snapshot)
+                  while (undoStack.size > 30) undoStack.removeAt(0)
+              }
+              fun undo(): EditorSnapshot? { if (!canUndo) return null; redoStack.add(undoStack.removeAt(undoStack.lastIndex)); return undoStack.last() }
+              fun redo(): EditorSnapshot? { if (!canRedo) return null; val r = redoStack.removeAt(redoStack.lastIndex); undoStack.add(r); return r }
+          }
+
+          class NotesDatabase(context: Context) : SQLiteOpenHelper(context, "monolith_vault.db", null, 2) {
+              override fun onCreate(db: SQLiteDatabase) {
+                  db.execSQL("CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, folder TEXT NOT NULL, tags TEXT NOT NULL, color_index INTEGER NOT NULL, is_pinned INTEGER NOT NULL, is_locked INTEGER NOT NULL, is_trashed INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+              }
+              override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) { onCreate(db); performRoutineMaintenance(db) }
+              override fun onOpen(db: SQLiteDatabase) { super.onOpen(db); if (!db.isReadOnly) performRoutineMaintenance(db) }
+              
+              private fun performRoutineMaintenance(db: SQLiteDatabase) {
+                  try {
+                      db.execSQL("DELETE FROM notes WHERE title IN ('Welcome to Monolith Vault', 'Zero-Cloud Architecture', 'Quick Capture Scratchpad')")
+                      db.execSQL("UPDATE notes SET folder = '' WHERE folder = 'Notes'")
+                      val thirtyDaysAgo = System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000)
+                      db.execSQL("DELETE FROM notes WHERE is_trashed = 1 AND updated_at < $thirtyDaysAgo")
+                  } catch (_: Exception) {}
+              }
+              fun upsertNote(note: Note) {
+                  try {
+                      val values = ContentValues().apply { put("id", note.id); put("title", note.title); put("content", note.document.serialize()); put("folder", normalizeFolderPath(note.folder)); put("tags", ""); put("color_index", 0); put("is_pinned", if(note.isPinned) 1 else 0); put("is_locked", 0); put("is_trashed", if(note.isTrashed) 1 else 0); put("created_at", note.createdAt); put("updated_at", note.updatedAt) }
+                      writableDatabase.insertWithOnConflict("notes", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+                  } catch (_: Exception) {}
+              }
+              fun permanentDeleteNote(id: String) { try { writableDatabase.delete("notes", "id = ?", arrayOf(id)) } catch (_: Exception) {} }
+              fun emptyTrash() { try { writableDatabase.delete("notes", "is_trashed = 1", null) } catch (_: Exception) {} }
+              fun clearFolderFromNotes(folderName: String) { try { writableDatabase.update("notes", ContentValues().apply { put("folder", "") }, "folder = ?", arrayOf(folderName)) } catch (_: Exception) {} }
+              fun renameFolderTree(oldPath: String, newPath: String) {
+                  val normOld = normalizeFolderPath(oldPath); val normNew = normalizeFolderPath(newPath)
+                  if (normOld.isEmpty() || normNew.isEmpty()) return
+                  getAllNotes(includeTrashed = false).forEach { note ->
+                      val nf = normalizeFolderPath(note.folder)
+                      if (nf.equals(normOld, ignoreCase=true)) upsertNote(note.copy(folder = normNew))
+                      else if (nf.startsWith("$normOld/", ignoreCase=true)) upsertNote(note.copy(folder = normNew + nf.substring(normOld.length)))
+                  }
+              }
+              fun removeFolderTreeMoveNotesToParent(targetPath: String) {
+                  val normTarget = normalizeFolderPath(targetPath); val parent = parentFolderPath(normTarget)
+                  getAllNotes(includeTrashed = false).forEach { note ->
+                      val nf = normalizeFolderPath(note.folder)
+                      if (nf.equals(normTarget, ignoreCase=true) || nf.startsWith("$normTarget/", ignoreCase=true)) upsertNote(note.copy(folder = parent))
+                  }
+              }
+              fun getAllNotes(includeTrashed: Boolean = false): List<Note> {
+                  val list = mutableListOf<Note>()
+                  try {
+                      val cursor = readableDatabase.query("notes", null, if (includeTrashed) "is_trashed = 1" else "is_trashed = 0", null, null, null, "updated_at DESC")
+                      cursor.use { c ->
+                          while (c.moveToNext()) {
+                              list.add(Note(
+                                  id = c.getString(c.getColumnIndexOrThrow("id")), title = c.getString(c.getColumnIndexOrThrow("title")),
+                                  document = RichNoteDocument.deserialize(c.getString(c.getColumnIndexOrThrow("content"))),
+                                  folder = normalizeFolderPath(c.getString(c.getColumnIndexOrThrow("folder"))),
+                                  isPinned = c.getInt(c.getColumnIndexOrThrow("is_pinned")) == 1,
+                                  isTrashed = c.getInt(c.getColumnIndexOrThrow("is_trashed")) == 1,
+                                  createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")), updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at"))
+                              ))
+                          }
+                      }
+                  } catch (_: Exception) {}
+                  return list
+              }
+          }
+
+          fun loadSavedFolders(prefs: SharedPreferences): List<String> {
+              return try { val arr = JSONArray(prefs.getString("custom_folders_json", "[]")); expandAllFolderPaths((0 until arr.length()).map { normalizeFolderPath(arr.optString(it)) }) } catch (_: Exception) { emptyList() }
+          }
+          fun saveFoldersList(prefs: SharedPreferences, folders: List<String>) {
+              val arr = JSONArray(); expandAllFolderPaths(folders).forEach { arr.put(it) }
+              prefs.edit().putString("custom_folders_json", arr.toString()).apply()
+          }
+
+          fun adjustDocumentOnEdit(oldDoc: RichNoteDocument, newText: String, activeBold: Boolean, activeItalic: Boolean): RichNoteDocument {
+              if (oldDoc.text == newText) return oldDoc
+              var prefix = 0; val minLen = min(oldDoc.text.length, newText.length)
+              while (prefix < minLen && oldDoc.text[prefix] == newText[prefix]) prefix++
+              var oldSuffix = oldDoc.text.length; var newSuffix = newText.length
+              while (oldSuffix > prefix && newSuffix > prefix && oldDoc.text[oldSuffix - 1] == newText[newSuffix - 1]) { oldSuffix--; newSuffix-- }
+              val delta = newText.length - oldDoc.text.length; val insertedCount = newSuffix - prefix
+              val updatedSpans = oldDoc.spans.mapNotNull { span ->
+                  val ns = if (span.start <= prefix) span.start else max(prefix, span.start + delta)
+                  val ne = if (span.end <= prefix) span.end else max(prefix, span.end + delta)
+                  if (ne > ns) span.copy(start = ns, end = ne) else null
+              }.toMutableList()
+              if (insertedCount > 0 && (activeBold || activeItalic)) updatedSpans.add(InlineStyleSpan(prefix, newSuffix, activeBold, activeItalic))
+              val removedNL = oldDoc.text.substring(prefix, oldSuffix).count { it == '\n' }; val addedNL = newText.substring(prefix, newSuffix).count { it == '\n' }; val lineDelta = addedNL - removedNL
+              val updatedHeadings = if (lineDelta == 0) oldDoc.lineHeadings else {
+                  val editLineIndex = oldDoc.text.substring(0, prefix).count { it == '\n' }
+                  val map = mutableMapOf<Int, HeadingStyle>()
+                  oldDoc.lineHeadings.forEach { (idx, style) ->
+                      if (idx < editLineIndex) map[idx] = style
+                      else if (idx == editLineIndex) {
+                          val lineStartOffset = oldDoc.text.lastIndexOf('\n', max(0, prefix - 1)).let { if (it == -1) 0 else it + 1 }
+                          if (addedNL > 0 && prefix == lineStartOffset) map[idx + lineDelta] = style else map[idx] = style
+                      } else if (idx + lineDelta >= 0) map[idx + lineDelta] = style
+                  }
+                  map
+              }
+              return oldDoc.copy(text = newText, spans = normalizeSpans(updatedSpans, newText.length), lineHeadings = updatedHeadings)
+          }
+
+          fun normalizeSpans(spans: List<InlineStyleSpan>, textLength: Int): List<InlineStyleSpan> {
+              val clamped = spans.mapNotNull { s -> val start = s.start.coerceIn(0, textLength); val end = s.end.coerceIn(0, textLength); if (end > start && (s.bold || s.italic || !s.link.isNullOrBlank())) s.copy(start = start, end = end) else null }
+              if (clamped.isEmpty()) return emptyList()
+              val points = clamped.flatMap { listOf(it.start, it.end) }.distinct().sorted()
+              val merged = mutableListOf<InlineStyleSpan>()
+              for (i in 0 until points.size - 1) {
+                  val s = points[i]; val e = points[i + 1]
+                  if (e <= s) continue
+                  val cov = clamped.filter { it.start <= s && it.end >= e }
+                  if (cov.isNotEmpty()) {
+                      val b = cov.any { it.bold }; val it = cov.any { it.italic }; val l = cov.lastOrNull { !it.link.isNullOrBlank() }?.link
+                      if (b || it || l != null) {
+                          val prev = merged.lastOrNull()
+                          if (prev != null && prev.end == s && prev.bold == b && prev.italic == it && prev.link == l) merged[merged.lastIndex] = prev.copy(end = e)
+                          else merged.add(InlineStyleSpan(s, e, b, it, l))
+                      }
+                  }
+              }
+              return merged
+          }
+
+          fun toggleSelectionInlineStyle(doc: RichNoteDocument, sel: TextRange, toggleBold: Boolean = false, toggleItalic: Boolean = false): RichNoteDocument {
+              val s = sel.min.coerceIn(0, doc.text.length); val e = sel.max.coerceIn(0, doc.text.length); if (e <= s) return doc
+              val allB = doc.spans.any { it.start <= s && it.end >= e && it.bold }; val allI = doc.spans.any { it.start <= s && it.end >= e && it.italic }
+              val res = mutableListOf<InlineStyleSpan>()
+              doc.spans.forEach { span ->
+                  if (span.end <= s || span.start >= e) res.add(span)
+                  else {
+                      if (span.start < s) res.add(span.copy(end = s))
+                      if (span.end > e) res.add(span.copy(start = e))
+                      val os = max(span.start, s); val oe = min(span.end, e)
+                      val nb = if (toggleBold) !allB else span.bold; val ni = if (toggleItalic) !allI else span.italic
+                      if (nb || ni || span.link != null) res.add(span.copy(start = os, end = oe, bold = nb, italic = ni))
+                  }
+              }
+              if (toggleBold && !allB) res.add(InlineStyleSpan(s, e, bold = true)); if (toggleItalic && !allI) res.add(InlineStyleSpan(s, e, italic = true))
+              return doc.copy(spans = normalizeSpans(res, doc.text.length))
+          }
+
+          class WysiwygVisualTransformation(private val doc: RichNoteDocument, private val baseFontSizeSp: Float, private val accentColor: Color, private val mutedColor: Color) : VisualTransformation {
+              override fun filter(text: AnnotatedString): TransformedText {
+                  val styled = buildAnnotatedString {
+                      append(text.text); var ls = 0; var idx = 0
+                      text.text.split('\n').forEach { line ->
+                          val le = ls + line.length
+                          if (le > ls) {
+                              when (doc.lineHeadings[idx]) {
+                                  HeadingStyle.LARGE -> addStyle(SpanStyle(fontSize = (baseFontSizeSp+7f).sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.3).sp), ls, le)
+                                  HeadingStyle.SMALL -> addStyle(SpanStyle(fontSize = (baseFontSizeSp+3f).sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.15).sp), ls, le)
+                                  else -> {}
+                              }
+                              if (line.startsWith("• ")) addStyle(SpanStyle(color = accentColor, fontWeight = FontWeight.Bold), ls, min(ls + 2, le))
+                              else if (line.startsWith("☐ ")) addStyle(SpanStyle(color = mutedColor, fontSize = (baseFontSizeSp+2f).sp), ls, min(ls + 2, le))
+                              else if (line.startsWith("☑ ")) {
+                                  addStyle(SpanStyle(color = accentColor, fontSize = (baseFontSizeSp+2f).sp), ls, min(ls + 2, le))
+                                  if (le > ls + 2) addStyle(SpanStyle(color = mutedColor, textDecoration = TextDecoration.LineThrough), ls + 2, le)
+                              }
+                          }
+                          ls = le + 1; idx++
+                      }
+                      doc.spans.forEach { span ->
+                          val s = span.start.coerceIn(0, text.length); val e = span.end.coerceIn(0, text.length)
+                          if (e > s) {
+                              if (span.bold) addStyle(SpanStyle(fontWeight = FontWeight.Bold), s, e)
+                              if (span.italic) addStyle(SpanStyle(fontStyle = FontStyle.Italic), s, e)
+                              if (!span.link.isNullOrBlank()) addStyle(SpanStyle(color = accentColor, textDecoration = TextDecoration.Underline), s, e)
+                          }
+                      }
+                  }
+                  return TransformedText(styled, OffsetMapping.Identity)
+              }
+          }
+
+          fun formatRelativeDate(millis: Long): String {
+              val diff = System.currentTimeMillis() - millis; val cN = Calendar.getInstance(); val cT = Calendar.getInstance().apply { timeInMillis = millis }
+              return when {
+                  diff < 60000L -> "Just now"
+                  cN.get(Calendar.YEAR) == cT.get(Calendar.YEAR) && cN.get(Calendar.DAY_OF_YEAR) == cT.get(Calendar.DAY_OF_YEAR) -> SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
+                  cN.get(Calendar.YEAR) == cT.get(Calendar.YEAR) && cN.get(Calendar.DAY_OF_YEAR) - cT.get(Calendar.DAY_OF_YEAR) == 1 -> "Yesterday"
+                  cN.get(Calendar.YEAR) == cT.get(Calendar.YEAR) -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(millis))
+                  else -> SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(millis))
+              }
+          }
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState); enableEdgeToEdge()
+                  val db = NotesDatabase(applicationContext); val prefs = getSharedPreferences("notes_settings", Context.MODE_PRIVATE)
+                  setContent {
+                      var isDarkTheme by remember { mutableStateOf(prefs.getBoolean("dark_mode", false)) }
+                      var fontScaleIndex by remember { mutableStateOf(prefs.getInt("font_scale", 1)) }
+                      val colorScheme = if (isDarkTheme) darkColorScheme(primary = Color(0xFFE6E1D6), onPrimary = Color(0xFF141413), background = Color(0xFF141413), surface = Color(0xFF1C1C1A), surfaceVariant = Color(0xFF262624), outline = Color(0xFF2E2E2B), error = Color(0xFFF28B82)) else lightColorScheme(primary = Color(0xFF1F1F1D), onPrimary = Color(0xFFFFFFFF), background = Color(0xFFFAF9F5), surface = Color(0xFFFFFFFF), surfaceVariant = Color(0xFFF1EFEA), outline = Color(0xFFE6E4DD), error = Color(0xFFD93025))
+                      MaterialTheme(colorScheme = colorScheme) {
+                          Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                              NotesApp(db, prefs, isDarkTheme, { isDarkTheme=it; prefs.edit().putBoolean("dark_mode",it).apply() }, fontScaleIndex, { fontScaleIndex=it; prefs.edit().putInt("font_scale",it).apply() }, floatArrayOf(15f, 16.5f, 18f)[fontScaleIndex.coerceIn(0,2)])
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun NotesApp(db: NotesDatabase, prefs: SharedPreferences, isDarkTheme: Boolean, onToggleDarkTheme: (Boolean) -> Unit, fontScaleIndex: Int, onSelectFontScale: (Int) -> Unit, baseFontSizeSp: Float) {
+              val scope = rememberCoroutineScope(); val snackbarHostState = remember { SnackbarHostState() }
+              var notes by remember { mutableStateOf(db.getAllNotes(false)) }; var customFolders by remember { mutableStateOf(loadSavedFolders(prefs)) }
+              var currentFolderPath by remember { mutableStateOf("") }; var activeNoteId by remember { mutableStateOf<String?>(null) }
+              var searchQuery by remember { mutableStateOf("") }
+              val sessionUndoMap = remember { mutableMapOf<String, SessionUndoQueue>() }
+              
+              var noteToRename by remember { mutableStateOf<Note?>(null) }; var noteToMoveFolder by remember { mutableStateOf<Note?>(null) }
+              var showNewFolderDialog by remember { mutableStateOf(false) }; var folderToRename by remember { mutableStateOf<String?>(null) }
+              var folderToDelete by remember { mutableStateOf<String?>(null) }; var showSettingsDialog by remember { mutableStateOf(false) }
+              var showTrashBin by remember { mutableStateOf(false) }
+
+              val allFolders = remember(customFolders, notes) { expandAllFolderPaths(customFolders + notes.map { normalizeFolderPath(it.folder) }.filter { it.isNotEmpty() }) }
+              fun refreshNotes() { notes = db.getAllNotes(false) }
+
+              fun handleDeleteWithUndo(target: Note) {
+                  db.upsertNote(target.copy(isTrashed = true, updatedAt = System.currentTimeMillis()))
+                  if (activeNoteId == target.id) activeNoteId = null
+                  refreshNotes()
+                  scope.launch {
+                      snackbarHostState.currentSnackbarData?.dismiss()
+                      val res = snackbarHostState.showSnackbar("Moved to trash", "Undo", duration = SnackbarDuration.Short)
+                      if (res == SnackbarResult.ActionPerformed) { db.upsertNote(target.copy(isTrashed = false)); refreshNotes() }
+                  }
+              }
+
+              val activeNote = remember(notes, activeNoteId) { activeNoteId?.let { id -> notes.firstOrNull { it.id == id } } }
+
+              Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) { data -> Snackbar(data, shape = RoundedCornerShape(10.dp), containerColor = MaterialTheme.colorScheme.onBackground, contentColor = MaterialTheme.colorScheme.background, actionColor = MaterialTheme.colorScheme.background) } }, containerColor = MaterialTheme.colorScheme.background) { rootPadding ->
+                  Box(Modifier.fillMaxSize().padding(rootPadding)) {
+                      if (showTrashBin) {
+                          TrashBinScreen(db, onBack = { showTrashBin = false; refreshNotes() })
+                      } else if (activeNote != null) {
+                          val undoQueue = remember(activeNote.id) { sessionUndoMap.getOrPut(activeNote.id) { SessionUndoQueue(EditorSnapshot(activeNote.title, activeNote.document, TextRange(activeNote.document.text.length))) } }
+                          NoteEditorScreen(activeNote, undoQueue, baseFontSizeSp, allFolders.isNotEmpty(), { db.upsertNote(it); refreshNotes() }, { refreshNotes(); activeNoteId = null }, { db.upsertNote(it.copy(isPinned = !it.isPinned, updatedAt = System.currentTimeMillis())); refreshNotes() }, { noteToRename = it }, { noteToMoveFolder = it }, { handleDeleteWithUndo(it) })
+                      } else {
+                          NotesHomeScreen(notes, allFolders, currentFolderPath, { currentFolderPath = normalizeFolderPath(it) }, { folderToRename = it }, { folderToDelete = it }, searchQuery, { searchQuery = it }, { activeNoteId = it.id }, { db.upsertNote(Note(title="", document=RichNoteDocument(), folder=currentFolderPath).also{activeNoteId=it.id}); refreshNotes() }, { showNewFolderDialog = true }, { db.upsertNote(it.copy(isPinned = !it.isPinned, updatedAt = System.currentTimeMillis())); refreshNotes() }, { noteToRename = it }, { noteToMoveFolder = it }, { handleDeleteWithUndo(it) }, { showSettingsDialog = true })
+                      }
+                  }
+              }
+
+              if (showNewFolderDialog) NewFolderDialog(currentFolderPath, { showNewFolderDialog = false }) { rawName ->
+                  val clean = rawName.trim().replace("/", "-")
+                  if (clean.isNotEmpty()) { val fp = if (currentFolderPath.isEmpty()) clean else "$currentFolderPath/$clean"; customFolders = expandAllFolderPaths(customFolders + fp); saveFoldersList(prefs, customFolders) }
+                  showNewFolderDialog = false
+              }
+              if (folderToRename != null) RenameFolderDialog(folderDisplayName(folderToRename!!), { folderToRename = null }) { rawName ->
+                  val clean = rawName.trim().replace("/", "-")
+                  if (clean.isNotEmpty()) {
+                      val parent = parentFolderPath(folderToRename!!); val newPath = if (parent.isEmpty()) clean else "$parent/$clean"
+                      customFolders = expandAllFolderPaths(customFolders.map { if (it.equals(folderToRename, true)) newPath else if (it.startsWith("$folderToRename/", true)) newPath + it.substring(folderToRename!!.length) else it } + newPath)
+                      saveFoldersList(prefs, customFolders); db.renameFolderTree(folderToRename!!, newPath)
+                      if (currentFolderPath.equals(folderToRename, true)) currentFolderPath = newPath else if (currentFolderPath.startsWith("$folderToRename/", true)) currentFolderPath = newPath + currentFolderPath.substring(folderToRename!!.length)
+                      refreshNotes()
+                  }
+                  folderToRename = null
+              }
+              if (folderToDelete != null) DeleteFolderDialog(folderDisplayName(folderToDelete!!), { folderToDelete = null }) {
+                  customFolders = customFolders.filterNot { it.equals(folderToDelete, true) || it.startsWith("$folderToDelete/", true) }
+                  saveFoldersList(prefs, customFolders); db.removeFolderTreeMoveNotesToParent(folderToDelete!!)
+                  if (currentFolderPath.equals(folderToDelete, true) || currentFolderPath.startsWith("$folderToDelete/", true)) currentFolderPath = parentFolderPath(folderToDelete!!)
+                  refreshNotes(); folderToDelete = null
+              }
+              if (noteToMoveFolder != null) MoveToFolderDialog(noteToMoveFolder!!.folder, allFolders, { noteToMoveFolder = null }, { db.upsertNote(noteToMoveFolder!!.copy(folder = normalizeFolderPath(it), updatedAt = System.currentTimeMillis())); refreshNotes(); noteToMoveFolder = null }, { noteToMoveFolder = null; showNewFolderDialog = true })
+              if (noteToRename != null) RenameNoteDialog(noteToRename!!.title, { noteToRename = null }) { db.upsertNote(noteToRename!!.copy(title = it.trim(), updatedAt = System.currentTimeMillis())); refreshNotes(); noteToRename = null }
+              if (showSettingsDialog) SettingsDialog(isDarkTheme, onToggleDarkTheme, fontScaleIndex, onSelectFontScale, { showSettingsDialog = false; showTrashBin = true }, { showSettingsDialog = false })
+          }
+
+          @Composable
+          fun NotesHomeScreen(notes: List<Note>, allFolders: List<String>, currentFolderPath: String, onNavigateFolder: (String) -> Unit, onRequestRenameFolder: (String) -> Unit, onRequestDeleteFolder: (String) -> Unit, searchQuery: String, onSearchQueryChange: (String) -> Unit, onOpenNote: (Note) -> Unit, onCreateNote: () -> Unit, onRequestCreateFolder: () -> Unit, onTogglePin: (Note) -> Unit, onRequestRename: (Note) -> Unit, onRequestMoveFolder: (Note) -> Unit, onRequestDelete: (Note) -> Unit, onOpenSettings: () -> Unit) {
+              BackHandler(enabled = currentFolderPath.isNotEmpty()) { onNavigateFolder(parentFolderPath(currentFolderPath)) }
+              val isSearch = searchQuery.trim().isNotEmpty()
+              val q = searchQuery.trim().lowercase()
+              val subfolders = remember(allFolders, currentFolderPath, searchQuery) { if (q.isEmpty()) directSubfoldersOf(currentFolderPath, allFolders) else allFolders.filter { (currentFolderPath.isEmpty() || it.startsWith("$currentFolderPath/", true)) && folderDisplayName(it).lowercase().contains(q) } }
+              val visibleNotes = remember(notes, currentFolderPath, searchQuery) { notes.filter { if (q.isEmpty()) it.folder.equals(currentFolderPath, true) else (currentFolderPath.isEmpty() || it.folder.equals(currentFolderPath, true) || it.folder.startsWith("$currentFolderPath/", true)) && (it.title.lowercase().contains(q) || it.document.text.lowercase().contains(q)) }.sortedByDescending { it.updatedAt } }
+              Box(Modifier.fillMaxSize(), Alignment.TopCenter) {
+                  Column(Modifier.fillMaxHeight().widthIn(max = 720.dp).fillMaxWidth().padding(horizontal = 20.dp)) {
+                      Spacer(Modifier.height(16.dp))
+                      Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                          Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                              if (currentFolderPath.isNotEmpty()) IconButton({ onNavigateFolder(parentFolderPath(currentFolderPath)) }, Modifier.size(36.dp).padding(end = 6.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Up", tint = MaterialTheme.colorScheme.onBackground) }
+                              Text(if (currentFolderPath.isEmpty()) "Folio" else folderDisplayName(currentFolderPath), fontSize = if (currentFolderPath.isEmpty()) 30.sp else 25.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onBackground)
+                          }
+                          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                              Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), shape = RoundedCornerShape(10.dp), modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onRequestCreateFolder() }) {
+                                  Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                      Icon(Icons.Default.CreateNewFolder, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                      Spacer(Modifier.width(6.dp))
+                                      Text("New folder", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                  }
+                              }
+                              IconButton(onOpenSettings) { Icon(Icons.Outlined.Settings, "Settings", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                          }
+                      }
+                      if (currentFolderPath.isNotEmpty()) {
+                          Spacer(Modifier.height(4.dp))
+                          Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                              Text("Folio", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { onNavigateFolder("") }.padding(4.dp, 2.dp))
+                              var acc = ""
+                              currentFolderPath.split("/").map { it.trim() }.filter { it.isNotEmpty() }.forEachIndexed { i, name ->
+                                  acc = if (acc.isEmpty()) name else "$acc/$name"
+                                  val t = acc; val isL = i == currentFolderPath.split("/").filter { it.isNotEmpty() }.lastIndex
+                                  Text("›", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.6f), modifier = Modifier.padding(horizontal = 4.dp))
+                                  Text(name, fontSize = 13.sp, fontWeight = if (isL) FontWeight.SemiBold else FontWeight.Medium, color = if (isL) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable(enabled = !isL) { onNavigateFolder(t) }.padding(4.dp, 2.dp))
+                              }
+                          }
+                      }
+                      Spacer(Modifier.height(14.dp))
+                      Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                          Row(Modifier.fillMaxWidth().padding(12.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                              Icon(Icons.Default.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(10.dp))
+                              Box(Modifier.weight(1f)) {
+                                  if (searchQuery.isEmpty()) Text(if (currentFolderPath.isEmpty()) "Search notes and folders" else "Search in ${folderDisplayName(currentFolderPath)}", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                  BasicTextField(searchQuery, onSearchQueryChange, singleLine = true, textStyle = TextStyle(fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), modifier = Modifier.fillMaxWidth())
+                              }
+                              if (searchQuery.isNotEmpty()) Icon(Icons.Default.Close, "Clear", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp).clickable { onSearchQueryChange("") })
+                          }
+                      }
+                      Spacer(Modifier.height(16.dp))
+                      if (subfolders.isEmpty() && visibleNotes.isEmpty()) {
+                          Box(Modifier.fillMaxWidth().weight(1f), Alignment.Center) {
+                              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                  Text(if (isSearch) "No matches found" else if (currentFolderPath.isNotEmpty()) "This folder is empty" else "No notes or folders yet", fontSize = 18.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onBackground)
+                                  Spacer(Modifier.height(6.dp))
+                                  Text(if (isSearch) "Try a different search term." else "Tap New folder above or the + button below.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                              }
+                          }
+                      } else {
+                          LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 96.dp)) {
+                              if (subfolders.isNotEmpty()) {
+                                  item("hf") { Text("Folders", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start=4.dp, bottom=6.dp, top=4.dp)) }
+                                  items(subfolders, key = { "f_$it" }) { fp ->
+                                      FolderListItem(fp, directSubfoldersOf(fp, allFolders).size, notes.count { it.folder.equals(fp, true) }, { onSearchQueryChange(""); onNavigateFolder(fp) }, { onRequestRenameFolder(fp) }, { onRequestDeleteFolder(fp) })
+                                  }
+                                  item("sf") { Spacer(Modifier.height(20.dp)) }
+                              }
+                              val pin = visibleNotes.filter { it.isPinned }; val unp = visibleNotes.filter { !it.isPinned }
+                              if (pin.isNotEmpty()) {
+                                  item("hp") { Text("Pinned", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start=4.dp, bottom=6.dp, top=4.dp)) }
+                                  items(pin, key = { "pn_${it.id}" }) { n -> NoteListItem(n, isSearch && n.folder.isNotBlank(), { onOpenNote(n) }, { onTogglePin(n) }, { onRequestRename(n) }, { onRequestMoveFolder(n) }, { onRequestDelete(n) }) }
+                                  item("sp") { Spacer(Modifier.height(20.dp)) }
+                              }
+                              if (unp.isNotEmpty() || (subfolders.isEmpty() && pin.isNotEmpty())) {
+                                  item("hn") { Text(if (currentFolderPath.isEmpty()) "Notes" else "Notes in ${folderDisplayName(currentFolderPath)}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start=4.dp, bottom=6.dp, top=4.dp)) }
+                                  if (unp.isEmpty() && pin.isNotEmpty()) item("hnh") { Text("All notes in this folder are pinned above.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp, 4.dp)) }
+                                  else items(unp, key = { "un_${it.id}" }) { n -> NoteListItem(n, isSearch && n.folder.isNotBlank(), { onOpenNote(n) }, { onTogglePin(n) }, { onRequestRename(n) }, { onRequestMoveFolder(n) }, { onRequestDelete(n) }) }
+                              }
+                          }
+                      }
+                  }
+                  FloatingActionButton(onCreateNote, shape = CircleShape, containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary, elevation = FloatingActionButtonDefaults.elevation(3.dp, 6.dp), modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = 24.dp)) {
+                      Icon(Icons.Default.Add, "New", Modifier.size(26.dp))
+                  }
+              }
+          }
+
+          @Composable
+          fun FolderListItem(path: String, subs: Int, notes: Int, onOpen: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+              var m by remember { mutableStateOf(false) }
+              Column(Modifier.fillMaxWidth()) {
+                  Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).combinedClickable(onClick=onOpen, onLongClick={m=true}).padding(8.dp, 12.dp), Alignment.CenterVertically, Arrangement.SpaceBetween) {
+                      Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f).padding(end=12.dp)) {
+                          Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp), modifier = Modifier.size(40.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp)) } }
+                          Spacer(Modifier.width(12.dp))
+                          Column {
+                              Text(folderDisplayName(path), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                              Spacer(Modifier.height(2.dp))
+                              val subText = listOfNotNull(if(subs>0) "$subs folder${if(subs>1)"s" else ""}" else null, if(notes>0) "$notes note${if(notes>1)"s" else ""}" else null).joinToString("  ·  ").ifEmpty { "Empty folder" }
+                              Text(subText, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                          }
+                      }
+                      Row(verticalAlignment = Alignment.CenterVertically) {
+                          Box {
+                              IconButton({ m=true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreHoriz, "Actions", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp)) }
+                              DropdownMenu(m, {m=false}, shape = RoundedCornerShape(12.dp), containerColor = MaterialTheme.colorScheme.surface) {
+                                  DropdownMenuItem({ Text("Rename folder") }, onClick = { m=false; onRename() }, leadingIcon = { Icon(Icons.Default.Edit, null, Modifier.size(18.dp)) })
+                                  HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outline.copy(alpha=0.6f))
+                                  DropdownMenuItem({ Text("Delete folder", color = MaterialTheme.colorScheme.error) }, onClick = { m=false; onDelete() }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)) })
+                              }
+                          }
+                          Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.6f), modifier = Modifier.size(20.dp))
+                      }
+                  }
+                  HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha=0.6f), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 8.dp))
+              }
+          }
+
+          @Composable
+          fun NoteListItem(note: Note, showFB: Boolean, onClick: () -> Unit, onPin: () -> Unit, onRen: () -> Unit, onMov: () -> Unit, onDel: () -> Unit) {
+              var m by remember { mutableStateOf(false) }
+              Column(Modifier.fillMaxWidth()) {
+                  Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).combinedClickable(onClick=onClick, onLongClick={m=true}).padding(8.dp, 12.dp), Alignment.Top, Arrangement.SpaceBetween) {
+                      Column(Modifier.weight(1f).padding(end=12.dp)) {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                              Text(note.title.ifBlank { "Untitled" }, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
+                              if (note.isPinned) { Spacer(Modifier.width(6.dp)); Icon(Icons.Default.PushPin, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(13.dp)) }
+                          }
+                          Spacer(Modifier.height(4.dp))
+                          Text(note.previewText.ifBlank { "No additional text" }, fontSize = 14.sp, lineHeight = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                          Spacer(Modifier.height(6.dp))
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                              Text(formatRelativeDate(note.updatedAt), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.75f))
+                              if (showFB && note.folder.isNotBlank()) Text("  ·  ${note.folder}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.75f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                          }
+                      }
+                      Box {
+                          IconButton({ m=true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreHoriz, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp)) }
+                          DropdownMenu(m, {m=false}, shape = RoundedCornerShape(12.dp), containerColor = MaterialTheme.colorScheme.surface) {
+                              DropdownMenuItem({ Text(if(note.isPinned) "Unpin" else "Pin") }, onClick = { m=false; onPin() }, leadingIcon = { Icon(if(note.isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin, null, Modifier.size(18.dp)) })
+                              DropdownMenuItem({ Text("Rename") }, onClick = { m=false; onRen() }, leadingIcon = { Icon(Icons.Default.Edit, null, Modifier.size(18.dp)) })
+                              DropdownMenuItem({ Text("Move to folder") }, onClick = { m=false; onMov() }, leadingIcon = { Icon(Icons.Outlined.Folder, null, Modifier.size(18.dp)) })
+                              HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outline.copy(alpha=0.6f))
+                              DropdownMenuItem({ Text("Delete", color = MaterialTheme.colorScheme.error) }, onClick = { m=false; onDel() }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)) })
+                          }
+                      }
+                  }
+                  HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha=0.6f), thickness = 0.5.dp, modifier = Modifier.padding(horizontal = 8.dp))
+              }
+          }
+
+          @Composable
+          fun NoteEditorScreen(note: Note, undoQueue: SessionUndoQueue, baseFontSizeSp: Float, hasFolders: Boolean, onAutoSave: (Note) -> Unit, onBack: () -> Unit, onPin: (Note) -> Unit, onRen: (Note) -> Unit, onMov: (Note) -> Unit, onDel: (Note) -> Unit) {
+              val fm = LocalFocusManager.current
+              var t by remember(note.id) { mutableStateOf(note.title) }
+              var d by remember(note.id) { mutableStateOf(note.document) }
+              var tfv by remember(note.id) { mutableStateOf(TextFieldValue(note.document.text, TextRange(note.document.text.length))) }
+              LaunchedEffect(note.title) { if (note.title != t) t = note.title }
+              var sSt by remember { mutableStateOf("SAVED") }; var sFm by remember { mutableStateOf(false) }; var iD by remember { mutableStateOf(false) }; var aB by remember { mutableStateOf(false) }; var aI by remember { mutableStateOf(false) }; var sM by remember { mutableStateOf(false) }; var sL by remember { mutableStateOf(false) }
+              var sTl by remember { mutableStateOf(DrawingTool.PEN) }; var sCIdx by remember { mutableStateOf(0) }; var pSIdx by remember { mutableStateOf(2) }; var eSIdx by remember { mutableStateOf(1) }
+              val tfR = remember { FocusRequester() }
+              LaunchedEffect(note.id) { if (note.title.isEmpty() && note.document.text.isEmpty() && note.document.strokes.isEmpty()) { delay(100); runCatching { tfR.requestFocus() } } }
+              
+              fun bCN() = note.copy(title = t.trim(), document = d, updatedAt = System.currentTimeMillis())
+              fun tIS(uD: RichNoteDocument=d, uT: String=t, s: TextRange=tfv.selection, rU: Boolean=true, fNU: Boolean=false) {
+                  if (rU) undoQueue.recordChange(EditorSnapshot(uT, uD, s), fNU)
+                  sSt = "SAVING"; onAutoSave(note.copy(title = uT.trim(), document = uD, updatedAt = System.currentTimeMillis()))
+              }
+              fun aS(sn: EditorSnapshot) {
+                  t = sn.title; d = sn.document; val se = sn.selection.end.coerceIn(0, sn.document.text.length); val ss = sn.selection.start.coerceIn(0, sn.document.text.length)
+                  tfv = TextFieldValue(sn.document.text, TextRange(ss, se)); tIS(sn.document, sn.title, TextRange(ss, se), false)
+              }
+              LaunchedEffect(t, d) { if (sSt == "SAVING") { delay(400); sSt = "SAVED" } }
+              BackHandler { if (iD) iD = false else { onAutoSave(bCN()); onBack() } }
+
+              val cC = tfv.selection.start.coerceIn(0, tfv.text.length); val cLI = tfv.text.substring(0, cC).count { it == '\n' }; val cHS = d.lineHeadings[cLI] ?: HeadingStyle.TEXT
+              val iSB = if (!tfv.selection.collapsed) d.spans.any { it.start <= tfv.selection.min && it.end >= tfv.selection.max && it.bold } else aB || d.spans.any { it.start < tfv.selection.start && it.end >= tfv.selection.start && it.bold }
+              val iSI = if (!tfv.selection.collapsed) d.spans.any { it.start <= tfv.selection.min && it.end >= tfv.selection.max && it.italic } else aI || d.spans.any { it.start < tfv.selection.start && it.end >= tfv.selection.start && it.italic }
+              val iTVis = !iD && (sFm || !tfv.selection.collapsed)
+              val vt = remember(d, baseFontSizeSp) { WysiwygVisualTransformation(d, baseFontSizeSp, Color(0xFFE6E1D6), Color(0xFF9C9891)) }
+
+              fun tLP(tP: String) {
+                  val r = tfv.text; val cur = tfv.selection.start.coerceIn(0, r.length); val ls = r.lastIndexOf('\n', max(0, cur-1)).let{if(it==-1)0 else it+1}; val le = r.indexOf('\n', cur).let{if(it==-1)r.length else it}; val cL = r.substring(ls, le)
+                  val eL = if (cL.startsWith("• ") || cL.startsWith("☐ ") || cL.startsWith("☑ ")) 2 else 0
+                  val rep = if ((tP == "☐ " && (cL.startsWith("☐ ") || cL.startsWith("☑ "))) || cL.startsWith(tP)) cL.substring(eL) else tP + cL.substring(eL)
+                  val nT = r.substring(0, ls) + rep + r.substring(le); val nS = TextRange((cur + rep.length - cL.length).coerceIn(ls, ls + rep.length))
+                  val nD = adjustDocumentOnEdit(d, nT, false, false)
+                  d = nD; tfv = TextFieldValue(nT, nS); tIS(nD, selection = nS, forceNewUndoStep = true)
+              }
+
+              Column(Modifier.fillMaxSize().imePadding()) {
+                  Box(Modifier.fillMaxWidth(), Alignment.Center) {
+                      Row(Modifier.widthIn(max=720.dp).fillMaxWidth().padding(8.dp, 6.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                          IconButton({ onAutoSave(bCN()); onBack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = MaterialTheme.colorScheme.onBackground) }
+                          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                              Text(if(sSt=="SAVING")"Saving…" else "Saved", fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.8f), modifier=Modifier.padding(end=6.dp))
+                              IconButton({ undoQueue.undo()?.let{aS(it)} }, enabled = undoQueue.canUndo) { Icon(Icons.AutoMirrored.Filled.Undo, null, tint = if(undoQueue.canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.3f), modifier = Modifier.size(20.dp)) }
+                              IconButton({ undoQueue.redo()?.let{aS(it)} }, enabled = undoQueue.canRedo) { Icon(Icons.AutoMirrored.Filled.Redo, null, tint = if(undoQueue.canRedo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.3f), modifier = Modifier.size(20.dp)) }
+                              IconButton({ iD = !iD; if(iD) { sFm = false; fm.clearFocus() } }) { Icon(Icons.Default.Brush, null, tint = if(iD) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp)) }
+                              IconButton({ if(iD) iD=false; sFm = !sFm }) { Icon(Icons.Default.FormatSize, null, tint = if(iTVis) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp)) }
+                              Box {
+                                  IconButton({ sM=true }) { Icon(Icons.Default.MoreHoriz, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                  NoteActionDropdownMenu(sM, note.isPinned, {sM=false}, {sM=false; onPin(bCN())}, {sM=false; onRen(bCN())}, {sM=false; onMov(bCN())}, {sM=false; onDel(bCN())})
+                              }
+                          }
+                      }
+                  }
+                  Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState(), enabled = !iD), horizontalAlignment = Alignment.CenterHorizontally) {
+                      Column(Modifier.widthIn(max=680.dp).fillMaxWidth().padding(horizontal=24.dp, vertical=12.dp)) {
+                          if (note.folder.isNotBlank() || hasFolders) {
+                              Row(Modifier.clip(RoundedCornerShape(6.dp)).clickable{onMov(bCN())}.padding(2.dp, 4.dp), verticalAlignment=Alignment.CenterVertically) {
+                                  Icon(Icons.Outlined.Folder, null, Modifier.size(14.dp), tint=MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.width(5.dp))
+                                  Text(note.folder.ifBlank{"Move to folder"}, fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant)
+                              }
+                              Spacer(Modifier.height(6.dp))
+                          }
+                          Box(Modifier.fillMaxWidth()) {
+                              if (t.isEmpty()) Text("Title", fontSize=26.sp, fontWeight=FontWeight.SemiBold, letterSpacing=(-0.4).sp, color=MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.45f))
+                              BasicTextField(t, {t=it; tIS(uT=it)}, textStyle=TextStyle(fontSize=26.sp, fontWeight=FontWeight.SemiBold, lineHeight=32.sp, letterSpacing=(-0.4).sp, color=MaterialTheme.colorScheme.onBackground), keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.Sentences, imeAction=ImeAction.Next), keyboardActions=KeyboardActions(onNext={runCatching{tfR.requestFocus()}}), cursorBrush=SolidColor(MaterialTheme.colorScheme.primary), modifier=Modifier.fillMaxWidth().focusRequester(tfR))
+                          }
+                      }
+                      if (iD || d.strokes.isNotEmpty()) {
+                          val den = LocalDensity.current.density; val aIC = MaterialTheme.colorScheme.onBackground
+                          var wS by remember(d.strokes) { mutableStateOf(d.strokes) }
+                          var aSP by remember { mutableStateOf<List<DrawPoint>>(emptyList()) }
+                          var eC by remember { mutableStateOf<DrawPoint?>(null) }
+                          val cTSI = if(sTl == DrawingTool.ERASER) eSIdx else pSIdx
+                          val lS by rememberUpdatedState(wS); val lT by rememberUpdatedState(sTl); val lC by rememberUpdatedState(sCIdx); val lSI by rememberUpdatedState(cTSI)
+                          Column(Modifier.fillMaxWidth()) {
+                              if (iD) HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha=0.5f), thickness=0.5.dp)
+                              Box(Modifier.fillMaxWidth().height(d.canvasHeightDp.dp).clipToBounds().then(if(!iD) Modifier.clickable{iD=true;sFm=false;fm.clearFocus()} else Modifier.pointerInput(Unit){
+                                  awaitEachGesture {
+                                      val down = awaitFirstDown(false); down.consume()
+                                      val sPt = DrawPoint(down.position.x/den, down.position.y/den)
+                                      val rDp = strokeWidthForTool(lT, lSI) * 0.5f
+                                      var gS = lS; var lPt = sPt
+                                      if (lT == DrawingTool.ERASER) { eC = sPt; gS = eraseStrokesAlongSegment(gS, sPt, sPt, rDp); wS = gS } else aSP = listOf(sPt)
+                                      do {
+                                          val ev = awaitPointerEvent(); val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
+                                          if (ch != null && ch.pressed) {
+                                              ch.consume(); val cPt = DrawPoint(ch.position.x/den, ch.position.y/den)
+                                              if (lT == DrawingTool.ERASER) { eC = cPt; gS = eraseStrokesAlongSegment(gS, lPt, cPt, rDp); wS = gS; lPt = cPt }
+                                              else if (hypot(cPt.xDp - lPt.xDp, cPt.yDp - lPt.yDp) >= 1f) { aSP = aSP + interpolatePoints(lPt, cPt, 1.5f); lPt = cPt }
+                                          }
+                                      } while (ev.changes.any { it.pressed })
+                                      eC = null
+                                      if (lT == DrawingTool.ERASER) { wS = gS; val nD = d.copy(strokes = gS); d = nD; tIS(nD, forceNewUndoStep=true) }
+                                      else if (aSP.isNotEmpty()) { val c = gS + DrawStroke(lT, lC, strokeWidthForTool(lT, lSI), aSP); aSP = emptyList(); wS = c; val nD = d.copy(strokes = c); d = nD; tIS(nD, forceNewUndoStep=true) }
+                                  }
+                              })) {
+                                  if (wS.isEmpty() && aSP.isEmpty() && iD) Text("Draw anywhere across the screen…", fontSize=13.sp, color=MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.45f), modifier=Modifier.align(Alignment.Center))
+                                  Canvas(Modifier.fillMaxSize()) {
+                                      fun dr(st: DrawStroke) {
+                                          if (st.points.isEmpty()) return
+                                          val pC = resolveInkColor(st.colorIndex, aIC).copy(alpha = st.tool.alpha); val sPx = st.widthDp * den
+                                          if (st.points.size == 1) drawCircle(pC, sPx/2f, Offset(st.points[0].xDp*den, st.points[0].yDp*den))
+                                          else drawPath(Path().apply { moveTo(st.points[0].xDp*den, st.points[0].yDp*den); for (i in 1 until st.points.size) { val pr = st.points[i-1]; val cr = st.points[i]; quadraticTo(pr.xDp*den, pr.yDp*den, (pr.xDp+cr.xDp)*0.5f*den, (pr.yDp+cr.yDp)*0.5f*den) }; lineTo(st.points.last().xDp*den, st.points.last().yDp*den) }, pC, style=Stroke(sPx, cap=if(st.tool==DrawingTool.HIGHLIGHTER) StrokeCap.Square else StrokeCap.Round, join=StrokeJoin.Round))
+                                      }
+                                      wS.forEach { dr(it) }; if (aSP.isNotEmpty() && sTl != DrawingTool.ERASER) dr(DrawStroke(sTl, sCIdx, strokeWidthForTool(sTl, cTSI), aSP))
+                                      eC?.let { c -> val r = (strokeWidthForTool(DrawingTool.ERASER, cTSI)*0.5f)*den; drawCircle(aIC.copy(0.12f), r, Offset(c.xDp*den, c.yDp*den)); drawCircle(aIC.copy(0.55f), r, Offset(c.xDp*den, c.yDp*den), style=Stroke(1.2f*den)) }
+                                  }
+                              }
+                              if (iD) {
+                                  Row(Modifier.fillMaxWidth().padding(20.dp, 4.dp), Arrangement.End, Alignment.CenterVertically) { Text("+ More space", fontSize=12.sp, fontWeight=FontWeight.Medium, color=MaterialTheme.colorScheme.primary, modifier=Modifier.clip(RoundedCornerShape(6.dp)).clickable{ val nD = d.copy(canvasHeightDp = (d.canvasHeightDp + 200).coerceAtMost(2600)); d = nD; tIS(nD, recordInUndo=false) }.padding(6.dp, 2.dp)) }
+                                  HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha=0.5f), thickness=0.5.dp)
+                              }
+                          }
+                      }
+                      Column(Modifier.widthIn(max=680.dp).fillMaxWidth().padding(horizontal=24.dp, vertical=12.dp)) {
+                          Box(Modifier.fillMaxWidth().defaultMinSize(minHeight=420.dp)) {
+                              if (tfv.text.isEmpty()) Text("Start writing…", fontSize=baseFontSizeSp.sp, lineHeight=(baseFontSizeSp*1.6f).sp, color=MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=0.45f))
+                              BasicTextField(tfv, { inc ->
+                                  if (iD) iD = false
+                                  if (inc.text == tfv.text && inc.selection.collapsed && inc.selection != tfv.selection) {
+                                      val tO = inc.selection.start.coerceIn(0, inc.text.length); val ls = inc.text.lastIndexOf('\n', max(0, tO-1)).let{if(it==-1)0 else it+1}; val le = inc.text.indexOf('\n', tO).let{if(it==-1)inc.text.length else it}; val cL = inc.text.substring(ls, le)
+                                      if ((cL.startsWith("☐ ") || cL.startsWith("☑ ")) && tO <= ls+2) { val tP = if(cL.startsWith("☐ ")) "☑ " else "☐ "; val nT = inc.text.substring(0, ls) + tP + cL.substring(2); val nD = d.copy(text = nT); val nS = TextRange(min(ls+2, nT.length)); d = nD; tfv = TextFieldValue(nT, nS); tIS(nD, selection=nS, forceNewUndoStep=true); return@BasicTextField }
+                                  }
+                                  if (inc.text.length == tfv.text.length + 1 && inc.selection.collapsed) {
+                                      val iI = (inc.selection.start - 1).coerceIn(0, inc.text.lastIndex)
+                                      if (inc.text[iI] == '\n') {
+                                          val pLS = inc.text.lastIndexOf('\n', max(0, iI-1)).let{if(it==-1)0 else it+1}; val pL = inc.text.substring(pLS, iI)
+                                          when {
+                                              pL=="• "||pL=="☐ "||pL=="☑ " -> { val nT = inc.text.substring(0, pLS) + inc.text.substring(iI+1); val nD = adjustDocumentOnEdit(d, nT, aB, aI); val nS = TextRange(pLS); d = nD; tfv = TextFieldValue(nT, nS); tIS(nD, selection=nS, forceNewUndoStep=true); return@BasicTextField }
+                                              pL.startsWith("• ") -> { val nT = inc.text.substring(0, iI+1) + "• " + inc.text.substring(iI+1); val nD = adjustDocumentOnEdit(d, nT, aB, aI); val nS = TextRange(iI+3); d = nD; tfv = TextFieldValue(nT, nS); tIS(nD, selection=nS, forceNewUndoStep=true); return@BasicTextField }
+                                              pL.startsWith("☐ ") || pL.startsWith("☑ ") -> { val nT = inc.text.substring(0, iI+1) + "☐ " + inc.text.substring(iI+1); val nD = adjustDocumentOnEdit(d, nT, aB, aI); val nS = TextRange(iI+3); d = nD; tfv = TextFieldValue(nT, nS); tIS(nD, selection=nS, forceNewUndoStep=true); return@BasicTextField }
+                                          }
+                                      }
+                                  }
+                                  if (inc.text != tfv.text) { val nD = adjustDocumentOnEdit(d, inc.text, aB, aI); d = nD; tfv = inc; tIS(nD, selection=inc.selection) } else tfv = inc
+                              }, textStyle=TextStyle(fontSize=baseFontSizeSp.sp, lineHeight=(baseFontSizeSp*1.6f).sp, color=MaterialTheme.colorScheme.onBackground), keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.Sentences), visualTransformation=vt, cursorBrush=SolidColor(MaterialTheme.colorScheme.primary), modifier=Modifier.fillMaxWidth().defaultMinSize(minHeight=420.dp).focusRequester(tfR))
+                          }
+                          // Extra 350dp space so you can easily scroll up and NEVER type blind under the keyboard
+                          Spacer(Modifier.height(350.dp))
+                      }
+                  }
+                  AnimatedVisibility(iD, enter=slideInVertically({it})+fadeIn(), exit=slideOutVertically({it})+fadeOut()) {
+                      Surface(color=MaterialTheme.colorScheme.surface, tonalElevation=2.dp, modifier=Modifier.fillMaxWidth()) {
+                          Column(Modifier.fillMaxWidth().padding(vertical=8.dp), horizontalAlignment=Alignment.CenterHorizontally) {
+                              Row(Modifier.widthIn(max=600.dp).horizontalScroll(rememberScrollState()).padding(horizontal=16.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                                  DrawingTool.entries.forEach { tool ->
+                                      val a = sTl == tool
+                                      Surface(color=if(a) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, shape=RoundedCornerShape(8.dp), modifier=Modifier.clip(RoundedCornerShape(8.dp)).clickable{sTl=tool}) { Text(tool.label, fontSize=13.sp, fontWeight=if(a) FontWeight.SemiBold else FontWeight.Medium, color=if(a) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, modifier=Modifier.padding(12.dp, 7.dp)) }
+                                  }
+                                  if (d.strokes.isNotEmpty()) TextButton({ val nD = d.copy(strokes=emptyList()); d=nD; tIS(nD, forceNewUndoStep=true) }, contentPadding=PaddingValues(10.dp, 4.dp)) { Text("Clear", fontSize=13.sp, color=MaterialTheme.colorScheme.error) }
+                                  TextButton({ iD=false }, contentPadding=PaddingValues(10.dp, 4.dp)) { Text("Done", fontSize=13.sp, fontWeight=FontWeight.SemiBold, color=MaterialTheme.colorScheme.primary) }
+                              }
+                              Spacer(Modifier.height(8.dp))
+                              Row(Modifier.widthIn(max=600.dp).horizontalScroll(rememberScrollState()).padding(horizontal=16.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                                  if (sTl != DrawingTool.ERASER) {
+                                      Row(horizontalArrangement=Arrangement.spacedBy(8.dp), verticalAlignment=Alignment.CenterVertically) {
+                                          InkPaletteSwatches.forEachIndexed { idx, sw ->
+                                              val a = sCIdx == idx
+                                              Box(Modifier.size(25.dp).clip(CircleShape).background(if(idx==0) MaterialTheme.colorScheme.onBackground else sw).border(if(a) 2.5.dp else 1.dp, if(a) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape).clickable{sCIdx=idx})
+                                          }
+                                      }
+                                  } else Text("Eraser size:", fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                  Row(horizontalArrangement=Arrangement.spacedBy(6.dp), verticalAlignment=Alignment.CenterVertically) {
+                                      val cTSI = if(sTl == DrawingTool.ERASER) eSIdx else pSIdx
+                                      SizePresetLabels.forEachIndexed { idx, l ->
+                                          val a = cTSI == idx
+                                          Surface(color=if(a) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, shape=RoundedCornerShape(8.dp), modifier=Modifier.height(28.dp).defaultMinSize(minWidth=30.dp).clip(RoundedCornerShape(8.dp)).clickable{if(sTl==DrawingTool.ERASER) eSIdx=idx else pSIdx=idx}) { Box(Alignment.Center, Modifier.padding(horizontal=7.dp)) { Text(l, fontSize=11.sp, fontWeight=FontWeight.SemiBold, color=if(a) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant) } }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  AnimatedVisibility(iTVis, enter=slideInVertically({it})+fadeIn(), exit=slideOutVertically({it})+fadeOut()) {
+                      Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(vertical=6.dp), Alignment.Center) {
+                          var sme by remember { mutableStateOf(false) }
+                          Row(Modifier.widthIn(max=560.dp).horizontalScroll(rememberScrollState()).padding(horizontal=16.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                              Box {
+                                  Surface(color=MaterialTheme.colorScheme.surfaceVariant, shape=RoundedCornerShape(8.dp), modifier=Modifier.clip(RoundedCornerShape(8.dp)).clickable{sme=true}) { Row(Modifier.padding(12.dp, 7.dp), verticalAlignment=Alignment.CenterVertically) { Text(cHS.label, fontSize=13.sp, fontWeight=FontWeight.Medium, color=MaterialTheme.colorScheme.onSurface); Spacer(Modifier.width(4.dp)); Icon(Icons.Default.ArrowDropDown, null, Modifier.size(18.dp), tint=MaterialTheme.colorScheme.onSurfaceVariant) } }
+                                  DropdownMenu(sme, {sme=false}, shape=RoundedCornerShape(12.dp), containerColor=MaterialTheme.colorScheme.surface) {
+                                      DropdownMenuItem({ Text("Text", fontSize=15.sp, fontWeight=FontWeight.Normal) }, { sme=false; val hm = d.lineHeadings.toMutableMap(); hm.remove(cLI); val nD = d.copy(lineHeadings=hm); d=nD; tIS(nD, forceNewUndoStep=true) })
+                                      DropdownMenuItem({ Text("Small heading", fontSize=17.sp, fontWeight=FontWeight.SemiBold) }, { sme=false; val hm = d.lineHeadings.toMutableMap(); hm[cLI] = HeadingStyle.SMALL; val nD = d.copy(lineHeadings=hm); d=nD; tIS(nD, forceNewUndoStep=true) })
+                                      DropdownMenuItem({ Text("Large heading", fontSize=20.sp, fontWeight=FontWeight.SemiBold) }, { sme=false; val hm = d.lineHeadings.toMutableMap(); hm[cLI] = HeadingStyle.LARGE; val nD = d.copy(lineHeadings=hm); d=nD; tIS(nD, forceNewUndoStep=true) })
+                                  }
+                              }
+                              Surface(color=if(iSB) MaterialTheme.colorScheme.primary else Color.Transparent, shape=RoundedCornerShape(8.dp), modifier=Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).clickable{ if(!tfv.selection.collapsed) { val nD = toggleSelectionInlineStyle(d, tfv.selection, toggleBold=true); d=nD; tIS(nD, forceNewUndoStep=true) } else aB = !aB }) { Box(Alignment.Center) { Icon(Icons.Default.FormatBold, null, tint=if(iSB) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, modifier=Modifier.size(20.dp)) } }
+                              Surface(color=if(iSI) MaterialTheme.colorScheme.primary else Color.Transparent, shape=RoundedCornerShape(8.dp), modifier=Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).clickable{ if(!tfv.selection.collapsed) { val nD = toggleSelectionInlineStyle(d, tfv.selection, toggleItalic=true); d=nD; tIS(nD, forceNewUndoStep=true) } else aI = !aI }) { Box(Alignment.Center) { Icon(Icons.Default.FormatItalic, null, tint=if(iSI) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, modifier=Modifier.size(20.dp)) } }
+                              Surface(color=Color.Transparent, shape=RoundedCornerShape(8.dp), modifier=Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).clickable{tLP("• ")}) { Box(Alignment.Center) { Icon(Icons.AutoMirrored.Filled.FormatListBulleted, null, tint=MaterialTheme.colorScheme.onSurface, modifier=Modifier.size(20.dp)) } }
+                              Surface(color=Color.Transparent, shape=RoundedCornerShape(8.dp), modifier=Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).clickable{tLP("☐ ")}) { Box(Alignment.Center) { Icon(Icons.Default.CheckBox, null, tint=MaterialTheme.colorScheme.onSurface, modifier=Modifier.size(20.dp)) } }
+                              Surface(color=Color.Transparent, shape=RoundedCornerShape(8.dp), modifier=Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).clickable{sL=true}) { Box(Alignment.Center) { Icon(Icons.Default.Link, null, tint=MaterialTheme.colorScheme.onSurface, modifier=Modifier.size(20.dp)) } }
+                          }
+                      }
+                  }
+              }
+              if (sL) InsertLinkDialog(if(!tfv.selection.collapsed) tfv.text.substring(tfv.selection.min, tfv.selection.max) else "", {sL=false}) { l, u -> val r = tfv.text; val iss = tfv.selection.min.coerceIn(0, r.length); val ie = tfv.selection.max.coerceIn(0, r.length); val dL = l.ifBlank{u}; val nT = r.substring(0, iss) + dL + r.substring(ie); val aD = adjustDocumentOnEdit(d, nT, false, false); val nD = aD.copy(spans = normalizeSpans(aD.spans + InlineStyleSpan(iss, iss + dL.length, link = u), nT.length)); val nS = TextRange(iss + dL.length); d=nD; tfv=TextFieldValue(nT, nS); tIS(nD, selection=nS, forceNewUndoStep=true); sL=false }
+          }
+
+          @Composable
+          fun TrashBinScreen(db: NotesDatabase, onBack: () -> Unit) {
+              var tN by remember { mutableStateOf(db.getAllNotes(true)) }
+              var showEmptyDialog by remember { mutableStateOf(false) }
+              Column(Modifier.fillMaxSize()) {
+                  Row(Modifier.fillMaxWidth().padding(8.dp, 6.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                      IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = MaterialTheme.colorScheme.onBackground) }
+                      Text("Trash Bin", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
+                      if (tN.isNotEmpty()) TextButton({ showEmptyDialog = true }) { Text("Empty", color = MaterialTheme.colorScheme.error) } else Spacer(Modifier.width(48.dp))
+                  }
+                  if (tN.isEmpty()) Box(Modifier.fillMaxSize(), Alignment.Center) { Text("Trash is empty.", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                  else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp)) {
+                      item { Text("Items in the trash will be permanently deleted after 30 days.", fontSize=13.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(bottom=16.dp)) }
+                      items(tN, key = { it.id }) { n ->
+                          val daysLeft = max(0, 30 - ((System.currentTimeMillis() - n.updatedAt) / (1000 * 60 * 60 * 24)).toInt())
+                          Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha=0.5f)).padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                              Column(Modifier.weight(1f).padding(end=12.dp)) {
+                                  Text(n.title.ifBlank { "Untitled" }, fontSize=16.sp, fontWeight=FontWeight.SemiBold, color=MaterialTheme.colorScheme.onSurface, maxLines=1, overflow=TextOverflow.Ellipsis)
+                                  Spacer(Modifier.height(4.dp))
+                                  Text("$daysLeft days left  ·  From ${if(n.folder.isEmpty()) "Folio" else folderDisplayName(n.folder)}", fontSize=13.sp, color=MaterialTheme.colorScheme.onSurfaceVariant)
+                              }
+                              TextButton({ db.upsertNote(n.copy(isTrashed = false, updatedAt = System.currentTimeMillis())); tN = db.getAllNotes(true) }) { Text("Restore") }
+                          }
+                          Spacer(Modifier.height(8.dp))
+                      }
+                  }
+              }
+              if (showEmptyDialog) AlertDialog(onDismissRequest = { showEmptyDialog = false }, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text("Empty Trash?", fontSize=18.sp, fontWeight=FontWeight.SemiBold) }, text = { Text("All items will be permanently deleted.", fontSize=15.sp, color=MaterialTheme.colorScheme.onSurfaceVariant) }, confirmButton = { TextButton({ db.emptyTrash(); tN = emptyList(); showEmptyDialog = false }) { Text("Empty", color=MaterialTheme.colorScheme.error, fontWeight=FontWeight.SemiBold) } }, dismissButton = { TextButton({ showEmptyDialog = false }) { Text("Cancel") } })
+          }
+
+          @Composable
+          fun SettingsDialog(isDarkTheme: Boolean, onToggleDarkTheme: (Boolean) -> Unit, fontScaleIndex: Int, onSelectFontScale: (Int) -> Unit, onOpenTrash: () -> Unit, onDismiss: () -> Unit) {
+              AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text("Settings", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }, text = {
+                  Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                      Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text("Dark appearance", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface); Text("Use a dark writing canvas", fontSize=13.sp, color=MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(isDarkTheme, onToggleDarkTheme) }
+                      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("Reading & writing text size", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Small", "Default", "Large").forEachIndexed { idx, label -> FilterChip(fontScaleIndex == idx, { onSelectFontScale(idx) }, label = { Text(label) }) } } }
+                      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha=0.5f))
+                      Text("Manage Trash Bin", fontSize = 15.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onOpenTrash() }.padding(vertical = 8.dp))
+                  }
+              }, confirmButton = { TextButton(onDismiss) { Text("Done", fontWeight = FontWeight.SemiBold) } })
+          }
+
+          @Composable fun NewFolderDialog(parentFolderPath: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) { var f by remember { mutableStateOf("") }; AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text(if (parentFolderPath.isEmpty()) "New folder" else "New folder in “${folderDisplayName(parentFolderPath)}”", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }, text = { OutlinedTextField(f, { f = it }, placeholder = { Text("Folder name") }, singleLine = true, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { onConfirm(f) }, enabled = f.trim().isNotEmpty()) { Text("Create", fontWeight = FontWeight.SemiBold) } }, dismissButton = { TextButton(onDismiss) { Text("Cancel") } }) }
+          @Composable fun RenameFolderDialog(currentName: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) { var f by remember { mutableStateOf(currentName) }; AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text("Rename folder", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }, text = { OutlinedTextField(f, { f = it }, placeholder = { Text("Folder name") }, singleLine = true, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { onConfirm(f) }, enabled = f.trim().isNotEmpty()) { Text("Save", fontWeight = FontWeight.SemiBold) } }, dismissButton = { TextButton(onDismiss) { Text("Cancel") } }) }
+          @Composable fun DeleteFolderDialog(folderName: String, onDismiss: () -> Unit, onConfirmDelete: () -> Unit) { AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text("Delete folder?", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }, text = { Text("“$folderName” will be removed. Any notes inside it will be moved up safely.", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }, confirmButton = { TextButton(onConfirmDelete) { Text("Delete", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold) } }, dismissButton = { TextButton(onDismiss) { Text("Cancel") } }) }
+          @Composable fun RenameNoteDialog(initialTitle: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) { var t by remember { mutableStateOf(initialTitle) }; AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text("Rename note", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }, text = { OutlinedTextField(t, { t = it }, placeholder = { Text("Note title") }, singleLine = true, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) }, confirmButton = { TextButton(onClick = { onConfirm(t) }) { Text("Save", fontWeight = FontWeight.SemiBold) } }, dismissButton = { TextButton(onDismiss) { Text("Cancel") } }) }
+          @Composable fun MoveToFolderDialog(currentFolder: String, folders: List<String>, onDismiss: () -> Unit, onSelectFolder: (String) -> Unit, onCreateNewFolder: () -> Unit) { AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text("Move to folder", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }, text = { Column(Modifier.verticalScroll(rememberScrollState()), Arrangement.spacedBy(4.dp)) { Surface(color = if (currentFolder.isBlank()) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onSelectFolder("") }) { Text("Folio (Home)", fontSize=15.sp, fontWeight=if(currentFolder.isBlank()) FontWeight.SemiBold else FontWeight.Normal, modifier=Modifier.padding(12.dp, 10.dp)) }; folders.forEach { f -> val d = f.count { it == '/' }; val s = currentFolder.equals(f, true); Surface(color = if (s) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onSelectFolder(f) }) { Row(Alignment.CenterVertically, Modifier.padding(start=(12+d*16).dp, end=12.dp, top=10.dp, bottom=10.dp)) { Icon(Icons.Outlined.Folder, null, tint=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.size(16.dp)); Spacer(Modifier.width(8.dp)); Text(folderDisplayName(f), fontSize=15.sp, fontWeight=if(s) FontWeight.SemiBold else FontWeight.Normal) } } }; Spacer(Modifier.height(6.dp)); TextButton(onCreateNewFolder) { Icon(Icons.Default.Add, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("New folder") } } }, confirmButton = { TextButton(onDismiss) { Text("Close") } }) }
+          @Composable fun InsertLinkDialog(initialLabel: String, onDismiss: () -> Unit, onInsertLink: (String, String) -> Unit) { var l by remember { mutableStateOf(initialLabel) }; var u by remember { mutableStateOf("") }; AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = MaterialTheme.colorScheme.surface, title = { Text("Add link", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) }, text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { OutlinedTextField(l, { l = it }, label = { Text("Text") }, singleLine = true, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()); OutlinedTextField(u, { u = it }, label = { Text("Link destination") }, placeholder = { Text("https://example.com") }, singleLine = true, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) } }, confirmButton = { TextButton(onClick = { onInsertLink(l.trim(), u.trim()) }, enabled = u.isNotBlank() || l.isNotBlank()) { Text("Insert", fontWeight = FontWeight.SemiBold) } }, dismissButton = { TextButton(onDismiss) { Text("Cancel") } }) }
+          EOF
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build Signed Release APK & Play Store Bundle
+      - name: Build Signed Release APK
         run: |
-          gradle assembleRelease bundleRelease
-          cp app/build/outputs/apk/release/app-release.apk Folio-Notes-Release.apk
-          cp app/build/outputs/bundle/release/app-release.aab Folio-Notes-PlayStore.aab
+          gradle assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk Folio-Notes.apk
 
-      - name: Upload Ready-to-Install APK
+      - name: Upload Finished Folio App
         uses: actions/upload-artifact@v4
         with:
-          name: Folio-Notes-Android-Release
-          path: |
-            Folio-Notes-Release.apk
-            Folio-Notes-PlayStore.aab
+          name: Folio-Notes-App
+          path: Folio-Notes.apk
