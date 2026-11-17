@@ -1025,7 +1025,8 @@ jobs:
               val lineHeadings: Map<Int, HeadingStyle> = emptyMap(),
               val strokes: List<DrawStroke> = emptyList(),
               val canvasHeightDp: Int = 300,
-              val reminderAt: Long? = null
+              val reminderAt: Long? = null,
+              val markdownMode: Boolean = false
           ) {
               fun toPlainPreview(): String {
                   val textPreview = text.lines()
@@ -1083,6 +1084,7 @@ jobs:
                       if (reminderAt != null && reminderAt > 0L) {
                           put("reminderAt", reminderAt)
                       }
+                      if (markdownMode) put("md", true)
                   }.toString()
               }
 
@@ -1165,7 +1167,8 @@ jobs:
                                       lineHeadings = headings,
                                       strokes = strokes,
                                       canvasHeightDp = canvasH,
-                                      reminderAt = rem
+                                      reminderAt = rem,
+                                      markdownMode = obj.optBoolean("md", false)
                                   )
                               }
                           } catch (_: Exception) {}
@@ -1377,7 +1380,7 @@ jobs:
                   if (!forceNewStep && current != null && undoStack.size > 1) {
                       val timeDiff = snapshot.timestamp - current.timestamp
                       val charDiff = abs(snapshot.document.text.length - current.document.text.length)
-                      val sameLineCount = snapshot.document.text.count { it == '\n' } == current.document.text.count { it == '\n' }
+                      val sameLineCount by lazy { snapshot.document.text.count { it == '\n' } == current.document.text.count { it == '\n' } }
                       val sameStrokes = snapshot.document.strokes.size == current.document.strokes.size
                       if (timeDiff < 1100L && charDiff <= 12 && sameLineCount && sameStrokes &&
                           current.document.lineHeadings == snapshot.document.lineHeadings
@@ -1600,10 +1603,10 @@ jobs:
                   }
               }
 
-              private fun getAllNotes(includeTrashed: Boolean): List<Note> {
+              private fun getAllNotes(includeTrashed: Boolean, onlyTrashed: Boolean = false): List<Note> {
                   val list = mutableListOf<Note>()
                   try {
-                      val selection = if (includeTrashed) null else "is_trashed = 0"
+                      val selection = if (onlyTrashed) "is_trashed = 1" else if (includeTrashed) null else "is_trashed = 0"
                       val cursor = readableDatabase.query(
                           "notes", null, selection, null, null, null, "updated_at DESC"
                       )
@@ -1639,7 +1642,7 @@ jobs:
 
               fun getTrashedNotes(): List<Note> {
                   purgeExpiredTrashNow()
-                  return getAllNotes(includeTrashed = true).filter { it.isTrashed }
+                  return getAllNotes(includeTrashed = true, onlyTrashed = true).filter { it.isTrashed }
               }
           }
 
@@ -1835,16 +1838,151 @@ jobs:
               return doc.copy(spans = normalizeSpans(result, doc.text.length))
           }
 
+          private val MD_HEADING = Regex("^(#{1,6})[ \\t]+")
+          private val MD_BULLET = Regex("^([ \\t]*)([-*+])[ \\t]+")
+          private val MD_QUOTE = Regex("^>[ \\t]?")
+          private val MD_BOLD = Regex("(\\*\\*|__)(?=\\S)(.+?)(?<=\\S)\\1")
+          private val MD_ITALIC = Regex("(?<![*\\w])\\*(?![*\\s])(.+?)(?<![*\\s])\\*(?![*\\w])")
+          private val MD_CODE = Regex("`([^`\\n]+)`")
+          private val MD_LINK = Regex("\\[([^\\]\\n]+)\\]\\(([^)\\s]+)[^)]*\\)")
+
+          private fun AnnotatedString.Builder.applyMarkdownStyles(
+              raw: String,
+              hidden: MutableList<IntRange>,
+              baseFontSizeSp: Float,
+              accent: Color,
+              muted: Color
+          ) {
+              var lineStart = 0
+              var inCode = false
+              while (lineStart <= raw.length) {
+                  var lineEnd = raw.indexOf('\n', lineStart)
+                  if (lineEnd == -1) lineEnd = raw.length
+                  val line = raw.substring(lineStart, lineEnd)
+                  if (line.trimStart().startsWith("```")) {
+                      if (line.isNotEmpty()) hidden.add(lineStart until lineEnd)
+                      inCode = !inCode
+                  } else if (inCode) {
+                      if (line.isNotEmpty()) {
+                          addStyle(
+                              SpanStyle(fontFamily = FontFamily.Monospace, background = muted.copy(alpha = 0.12f)),
+                              lineStart,
+                              lineEnd
+                          )
+                      }
+                  } else if (line.isNotEmpty()) {
+                      var prefixLen = 0
+                      val h = MD_HEADING.find(line)
+                      if (h != null) {
+                          prefixLen = h.value.length
+                          hidden.add(lineStart until lineStart + prefixLen)
+                          val big = h.groupValues[1].length == 1
+                          if (lineEnd > lineStart + prefixLen) {
+                              addStyle(
+                                  SpanStyle(
+                                      fontSize = (baseFontSizeSp + (if (big) 7f else 3f)).sp,
+                                      fontWeight = FontWeight.SemiBold
+                                  ),
+                                  lineStart + prefixLen,
+                                  lineEnd
+                              )
+                          }
+                      } else {
+                          val b = MD_BULLET.find(line)
+                          if (b != null) {
+                              prefixLen = b.value.length
+                              val markerPos = lineStart + b.groupValues[1].length
+                              addStyle(SpanStyle(color = accent, fontWeight = FontWeight.Bold), markerPos, markerPos + 1)
+                          } else {
+                              val q = MD_QUOTE.find(line)
+                              if (q != null) {
+                                  prefixLen = q.value.length
+                                  hidden.add(lineStart until lineStart + prefixLen)
+                                  if (lineEnd > lineStart + prefixLen) {
+                                      addStyle(
+                                          SpanStyle(fontStyle = FontStyle.Italic, color = muted),
+                                          lineStart + prefixLen,
+                                          lineEnd
+                                      )
+                                  }
+                              }
+                          }
+                      }
+                      if (prefixLen < line.length) {
+                          val body = line.substring(prefixLen)
+                          val base = lineStart + prefixLen
+                          for (m in MD_CODE.findAll(body)) {
+                              val s = base + m.range.first
+                              val e = base + m.range.last + 1
+                              hidden.add(s until s + 1)
+                              hidden.add(e - 1 until e)
+                              addStyle(
+                                  SpanStyle(fontFamily = FontFamily.Monospace, background = muted.copy(alpha = 0.15f)),
+                                  s + 1,
+                                  e - 1
+                              )
+                          }
+                          for (m in MD_BOLD.findAll(body)) {
+                              val s = base + m.range.first
+                              val e = base + m.range.last + 1
+                              hidden.add(s until s + 2)
+                              hidden.add(e - 2 until e)
+                              addStyle(SpanStyle(fontWeight = FontWeight.Bold), s + 2, e - 2)
+                          }
+                          for (m in MD_ITALIC.findAll(body)) {
+                              val s = base + m.range.first
+                              val e = base + m.range.last + 1
+                              hidden.add(s until s + 1)
+                              hidden.add(e - 1 until e)
+                              addStyle(SpanStyle(fontStyle = FontStyle.Italic), s + 1, e - 1)
+                          }
+                          for (m in MD_LINK.findAll(body)) {
+                              val s = base + m.range.first
+                              val e = base + m.range.last + 1
+                              val textEnd = s + 1 + m.groupValues[1].length
+                              hidden.add(s until s + 1)
+                              hidden.add(textEnd until e)
+                              addStyle(SpanStyle(color = accent, textDecoration = TextDecoration.Underline), s + 1, textEnd)
+                          }
+                      }
+                  }
+                  lineStart = lineEnd + 1
+              }
+          }
+
+          private fun mergeHiddenRanges(ranges: List<IntRange>): List<IntRange> {
+              if (ranges.isEmpty()) return ranges
+              val sorted = ranges.filter { it.last >= it.first }.sortedBy { it.first }
+              if (sorted.isEmpty()) return sorted
+              val out = ArrayList<IntRange>()
+              var cs = sorted[0].first
+              var ce = sorted[0].last
+              for (i in 1 until sorted.size) {
+                  val r = sorted[i]
+                  if (r.first <= ce + 1) {
+                      if (r.last > ce) ce = r.last
+                  } else {
+                      out.add(cs..ce)
+                      cs = r.first
+                      ce = r.last
+                  }
+              }
+              out.add(cs..ce)
+              return out
+          }
+
           class WysiwygVisualTransformation(
               private val doc: RichNoteDocument,
               private val baseFontSizeSp: Float,
               private val accentColor: Color,
               private val mutedColor: Color,
               private val searchMatches: List<IntRange> = emptyList(),
-              private val activeMatchIndex: Int = 0
+              private val activeMatchIndex: Int = 0,
+              private val markdownMode: Boolean = false
           ) : VisualTransformation {
               override fun filter(text: AnnotatedString): TransformedText {
                   val raw = text.text
+                  val hidden = mutableListOf<IntRange>()
                   val styled = buildAnnotatedString {
                       append(raw)
                       var lineStart = 0
@@ -1916,6 +2054,8 @@ jobs:
                           }
                       }
 
+                      if (markdownMode) applyMarkdownStyles(raw, hidden, baseFontSizeSp, accentColor, mutedColor)
+
                       searchMatches.forEachIndexed { idx, range ->
                           val s = range.first.coerceIn(0, raw.length)
                           val e = (range.last + 1).coerceIn(0, raw.length)
@@ -1933,7 +2073,43 @@ jobs:
                           }
                       }
                   }
-                  return TransformedText(styled, OffsetMapping.Identity)
+                  if (!markdownMode || hidden.isEmpty()) return TransformedText(styled, OffsetMapping.Identity)
+
+                  val merged = mergeHiddenRanges(hidden).map { r -> r.first.coerceIn(0, raw.length)..r.last.coerceAtMost(raw.length - 1) }
+                  val transformed = buildAnnotatedString {
+                      var pos = 0
+                      for (r in merged) {
+                          if (r.first > pos) append(styled.subSequence(pos, r.first))
+                          pos = r.last + 1
+                      }
+                      if (pos < raw.length) append(styled.subSequence(pos, raw.length))
+                  }
+                  val transformedLength = transformed.length
+                  val mapping = object : OffsetMapping {
+                      override fun originalToTransformed(offset: Int): Int {
+                          var removed = 0
+                          for (r in merged) {
+                              if (offset > r.last) {
+                                  removed += r.last - r.first + 1
+                              } else if (offset > r.first) {
+                                  removed += offset - r.first
+                                  break
+                              } else {
+                                  break
+                              }
+                          }
+                          return (offset - removed).coerceIn(0, transformedLength)
+                      }
+
+                      override fun transformedToOriginal(offset: Int): Int {
+                          var shift = 0
+                          for (r in merged) {
+                              if (offset >= r.first - shift) shift += r.last - r.first + 1 else break
+                          }
+                          return (offset + shift).coerceIn(0, raw.length)
+                      }
+                  }
+                  return TransformedText(transformed, mapping)
               }
           }
 
@@ -2141,7 +2317,46 @@ jobs:
                   ensureFolderColorsAssigned(prefs, allFolders)
               }
 
+              val pendingSave = remember { arrayOfNulls<Note>(1) }
+              val pendingSaveJob = remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
+
+              fun flushPendingSave() {
+                  pendingSaveJob[0]?.cancel()
+                  pendingSaveJob[0] = null
+                  val p = pendingSave[0]
+                  if (p != null) {
+                      pendingSave[0] = null
+                      db.upsertNote(p)
+                  }
+              }
+
+              fun queueNoteSave(n: Note) {
+                  pendingSave[0] = n
+                  pendingSaveJob[0]?.cancel()
+                  pendingSaveJob[0] = scope.launch {
+                      delay(600L)
+                      flushPendingSave()
+                  }
+              }
+
+              DisposableEffect(context) {
+                  val owner = context as? androidx.lifecycle.LifecycleOwner
+                  val observer = object : androidx.lifecycle.LifecycleEventObserver {
+                      override fun onStateChanged(
+                          source: androidx.lifecycle.LifecycleOwner,
+                          event: androidx.lifecycle.Lifecycle.Event
+                      ) {
+                          if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE ||
+                              event == androidx.lifecycle.Lifecycle.Event.ON_STOP
+                          ) flushPendingSave()
+                      }
+                  }
+                  owner?.lifecycle?.addObserver(observer)
+                  onDispose { owner?.lifecycle?.removeObserver(observer) }
+              }
+
               fun refreshNotes() {
+                  flushPendingSave()
                   notes = db.getActiveNotes()
                   trashedNotes = db.getTrashedNotes()
               }
@@ -2226,16 +2441,14 @@ jobs:
                                   prefs = prefs,
                                   undoQueue = undoQueue,
                                   baseFontSizeSp = baseFontSizeSp,
-                                  onAutoSave = { updated ->
-                                      db.upsertNote(updated)
-                                      refreshNotes()
-                                  },
+                                  onAutoSave = { updated -> queueNoteSave(updated) },
                                   onBack = {
                                       isNewNoteJustCreated = false
                                       refreshNotes()
                                       activeNoteId = null
                                   },
                                   onTogglePin = { current ->
+                                      flushPendingSave()
                                       val updated = current.copy(
                                           isPinned = !current.isPinned,
                                           updatedAt = System.currentTimeMillis()
@@ -2243,10 +2456,10 @@ jobs:
                                       db.upsertNote(updated)
                                       refreshNotes()
                                   },
-                                  onRequestRename = { current -> noteToRename = current },
-                                  onRequestMoveFolder = { current -> notesToMoveFolderBatch = listOf(current) },
-                                  onRequestExport = { current -> notesToExportSheet = listOf(current) },
-                                  onRequestDelete = { current -> notesToDeleteBatch = listOf(current) }
+                                  onRequestRename = { current -> flushPendingSave(); noteToRename = current },
+                                  onRequestMoveFolder = { current -> flushPendingSave(); notesToMoveFolderBatch = listOf(current) },
+                                  onRequestExport = { current -> flushPendingSave(); notesToExportSheet = listOf(current) },
+                                  onRequestDelete = { current -> flushPendingSave(); notesToDeleteBatch = listOf(current) }
                               )
                           }
                           isViewingTrash -> {
@@ -3116,16 +3329,29 @@ jobs:
 
                           Row(
                               modifier = Modifier
-                                  .fillMaxWidth()
-                                  .horizontalScroll(rememberScrollState()),
+                                  .fillMaxWidth(),
                               horizontalArrangement = Arrangement.spacedBy(8.dp),
                               verticalAlignment = Alignment.CenterVertically
                           ) {
-                              if (selectedNotesList.size == 1) {
+                              val isSingle = selectedNotesList.size == 1
+                              SelectionBarChip(
+                                  icon = Icons.Default.Delete,
+                                  label = "Delete",
+                                  isDestructive = true,
+                                  modifier = Modifier.weight(if (isSingle) 2f else 1f),
+                                  onClick = {
+                                      val batch = selectedNotesList
+                                      selectedNoteIds = emptySet()
+                                      onRequestDeleteBatch(batch)
+                                  }
+                              )
+                              if (isSingle) {
                                   val single = selectedNotesList.first()
                                   SelectionBarChip(
                                       icon = Icons.Outlined.PushPin,
                                       label = if (single.isPinned) "Unpin" else "Pin",
+                                      showLabel = false,
+                                      modifier = Modifier.weight(1f),
                                       onClick = {
                                           selectedNoteIds = emptySet()
                                           onTogglePin(single)
@@ -3134,6 +3360,8 @@ jobs:
                                   SelectionBarChip(
                                       icon = Icons.Default.Edit,
                                       label = "Rename",
+                                      showLabel = false,
+                                      modifier = Modifier.weight(1f),
                                       onClick = {
                                           selectedNoteIds = emptySet()
                                           onRequestRename(single)
@@ -3144,6 +3372,8 @@ jobs:
                               SelectionBarChip(
                                   icon = Icons.Outlined.Folder,
                                   label = "Move",
+                                  showLabel = !isSingle,
+                                  modifier = Modifier.weight(1f),
                                   onClick = {
                                       val batch = selectedNotesList
                                       selectedNoteIds = emptySet()
@@ -3154,21 +3384,12 @@ jobs:
                               SelectionBarChip(
                                   icon = Icons.Default.IosShare,
                                   label = "Export",
+                                  showLabel = !isSingle,
+                                  modifier = Modifier.weight(1f),
                                   onClick = {
                                       val batch = selectedNotesList
                                       selectedNoteIds = emptySet()
                                       onRequestExportBatch(batch)
-                                  }
-                              )
-
-                              SelectionBarChip(
-                                  icon = Icons.Default.Delete,
-                                  label = "Delete (${selectedNotesList.size})",
-                                  isDestructive = true,
-                                  onClick = {
-                                      val batch = selectedNotesList
-                                      selectedNoteIds = emptySet()
-                                      onRequestDeleteBatch(batch)
                                   }
                               )
                           }
@@ -3226,6 +3447,8 @@ jobs:
               icon: ImageVector,
               label: String,
               isDestructive: Boolean = false,
+              showLabel: Boolean = true,
+              modifier: Modifier = Modifier,
               onClick: () -> Unit
           ) {
               val palette = LocalFolioPalette.current
@@ -3234,26 +3457,30 @@ jobs:
 
               Row(
                   verticalAlignment = Alignment.CenterVertically,
-                  modifier = Modifier
+                  horizontalArrangement = Arrangement.Center,
+                  modifier = modifier
                       .height(40.dp)
                       .clip(RoundedCornerShape(12.dp))
                       .background(bgColor, RoundedCornerShape(12.dp))
                       .clickable(onClick = onClick)
-                      .padding(horizontal = 12.dp)
+                      .padding(horizontal = 8.dp)
               ) {
                   Icon(
                       imageVector = icon,
-                      contentDescription = null,
+                      contentDescription = if (showLabel) null else label,
                       tint = contentColor,
                       modifier = Modifier.size(18.dp)
                   )
-                  Spacer(Modifier.width(6.dp))
-                  Text(
-                      text = label,
-                      fontSize = 14.sp,
-                      fontWeight = FontWeight.SemiBold,
-                      color = contentColor
-                  )
+                  if (showLabel) {
+                      Spacer(Modifier.width(6.dp))
+                      Text(
+                          text = label,
+                          fontSize = 14.sp,
+                          fontWeight = FontWeight.SemiBold,
+                          color = contentColor,
+                          maxLines = 1
+                      )
+                  }
               }
           }
 
@@ -3919,6 +4146,35 @@ jobs:
 
               // Continuous edge auto-scroll during text selection drag
               var selectionDragFingerYInViewport by remember { mutableStateOf<Float?>(null) }
+              var tapRequestSerial by remember { mutableStateOf(0) }
+              val tapDownY = remember { floatArrayOf(0f) }
+              val tapSelectionAtDown = remember { arrayOfNulls<TextRange>(1) }
+
+              // First tap into an unfocused note: keep the tapped line where the finger touched
+              // while the keyboard opens, instead of letting focus/IME resize scroll to a stale cursor.
+              LaunchedEffect(tapRequestSerial) {
+                  if (tapRequestSerial == 0) return@LaunchedEffect
+                  val startSel = tapSelectionAtDown[0]
+                  val startedAt = System.currentTimeMillis()
+                  while (System.currentTimeMillis() - startedAt < 700L) {
+                      delay(16L)
+                      if (!bodyIsFocused || scrollState.isScrollInProgress) continue
+                      val sel = textFieldValue.selection
+                      if (sel == startSel || !sel.collapsed) continue
+                      val layout = latestTextLayout ?: continue
+                      val rect = runCatching {
+                          layout.getCursorRect(sel.end.coerceIn(0, layout.layoutInput.text.length))
+                      }.getOrNull() ?: continue
+                      val minY = 48f * density
+                      val maxY = (scrollViewportHeightPx - 96f * density).coerceAtLeast(minY)
+                      val desiredY = tapDownY[0].coerceIn(minY, maxY)
+                      val contentY = bodyTopOffsetInContentPx + (rect.top + rect.bottom) / 2f
+                      val currentY = contentY - scrollState.value
+                      if (abs(currentY - desiredY) > 3f * density) {
+                          scrollState.scrollTo((contentY - desiredY).roundToInt().coerceIn(0, scrollState.maxValue))
+                      }
+                  }
+              }
               LaunchedEffect(selectionDragFingerYInViewport, textFieldValue.selection) {
                   while (selectionDragFingerYInViewport != null && !textFieldValue.selection.collapsed && scrollViewportHeightPx > 0) {
                       val y = selectionDragFingerYInViewport ?: break
@@ -4043,7 +4299,7 @@ jobs:
 
               fun applySnapshot(snapshot: EditorSnapshot) {
                   title = snapshot.title
-                  doc = snapshot.document
+                  doc = snapshot.document.copy(markdownMode = doc.markdownMode)
                   val safeEnd = snapshot.selection.end.coerceIn(0, snapshot.document.text.length)
                   val safeStart = snapshot.selection.start.coerceIn(0, snapshot.document.text.length)
                   textFieldValue = TextFieldValue(
@@ -4051,7 +4307,7 @@ jobs:
                       selection = TextRange(safeStart, safeEnd)
                   )
                   triggerImmediateSave(
-                      updatedDoc = snapshot.document,
+                      updatedDoc = doc,
                       updatedTitle = snapshot.title,
                       selection = TextRange(safeStart, safeEnd),
                       recordInUndo = false
@@ -4076,7 +4332,10 @@ jobs:
 
               val currentCursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
               val currentLineIndex = remember(textFieldValue.text, currentCursor) {
-                  textFieldValue.text.substring(0, currentCursor).count { it == '\n' }
+                  var n = 0
+                  val t = textFieldValue.text
+                  for (i in 0 until currentCursor) if (t[i] == '\n') n++
+                  n
               }
               val currentHeadingStyle = doc.lineHeadings[currentLineIndex] ?: HeadingStyle.TEXT
 
@@ -4116,7 +4375,8 @@ jobs:
                       accentColor = accentColor,
                       mutedColor = mutedColor,
                       searchMatches = findMatches,
-                      activeMatchIndex = activeMatchIdx
+                      activeMatchIndex = activeMatchIdx,
+                      markdownMode = doc.markdownMode
                   )
               }
 
@@ -4254,6 +4514,11 @@ jobs:
                                   )
 
                                   val hasActiveReminder = doc.reminderAt != null && doc.reminderAt!! > System.currentTimeMillis()
+                                  MaterialTheme(
+                                      typography = MaterialTheme.typography.copy(
+                                          labelLarge = MaterialTheme.typography.labelLarge.copy(fontSize = 17.sp, lineHeight = 24.sp)
+                                      )
+                                  ) {
                                   DropdownMenu(
                                       expanded = showMoreMenu,
                                       onDismissRequest = { showMoreMenu = false },
@@ -4273,7 +4538,7 @@ jobs:
                                                   else Icons.Outlined.Notifications,
                                                   contentDescription = null,
                                                   tint = if (hasActiveReminder) palette.newFolderAccent else palette.primaryText,
-                                                  modifier = Modifier.size(19.dp)
+                                                  modifier = Modifier.size(22.dp)
                                               )
                                           },
                                           onClick = {
@@ -4293,7 +4558,7 @@ jobs:
                                       DropdownMenuItem(
                                           text = { Text("Find in note") },
                                           leadingIcon = {
-                                              Icon(Icons.Default.Search, null, Modifier.size(19.dp))
+                                              Icon(Icons.Default.Search, null, Modifier.size(22.dp))
                                           },
                                           onClick = {
                                               showMoreMenu = false
@@ -4303,7 +4568,7 @@ jobs:
                                       DropdownMenuItem(
                                           text = { Text("Export / Send via Bluetooth") },
                                           leadingIcon = {
-                                              Icon(Icons.Default.IosShare, null, Modifier.size(19.dp))
+                                              Icon(Icons.Default.IosShare, null, Modifier.size(22.dp))
                                           },
                                           onClick = {
                                               showMoreMenu = false
@@ -4315,7 +4580,7 @@ jobs:
                                       DropdownMenuItem(
                                           text = { Text("Select all text") },
                                           leadingIcon = {
-                                              Icon(Icons.Default.SelectAll, null, Modifier.size(19.dp))
+                                              Icon(Icons.Default.SelectAll, null, Modifier.size(22.dp))
                                           },
                                           onClick = {
                                               showMoreMenu = false
@@ -4323,6 +4588,33 @@ jobs:
                                               textFieldValue = textFieldValue.copy(
                                                   selection = TextRange(0, textFieldValue.text.length)
                                               )
+                                          }
+                                      )
+                                      DropdownMenuItem(
+                                          text = { Text("Format AI text (Markdown)") },
+                                          leadingIcon = {
+                                              Icon(
+                                                  Icons.Default.AutoFixHigh,
+                                                  null,
+                                                  Modifier.size(22.dp),
+                                                  tint = if (doc.markdownMode) palette.newFolderAccent else palette.primaryText
+                                              )
+                                          },
+                                          trailingIcon = {
+                                              if (doc.markdownMode) {
+                                                  Icon(
+                                                      Icons.Default.Check,
+                                                      null,
+                                                      Modifier.size(20.dp),
+                                                      tint = palette.newFolderAccent
+                                                  )
+                                              }
+                                          },
+                                          onClick = {
+                                              showMoreMenu = false
+                                              val updatedDoc = doc.copy(markdownMode = !doc.markdownMode)
+                                              doc = updatedDoc
+                                              triggerImmediateSave(updatedDoc = updatedDoc, recordInUndo = false)
                                           }
                                       )
                                       HorizontalDivider(
@@ -4335,7 +4627,7 @@ jobs:
                                               Icon(
                                                   if (note.isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
                                                   null,
-                                                  Modifier.size(19.dp)
+                                                  Modifier.size(22.dp)
                                               )
                                           },
                                           onClick = {
@@ -4346,7 +4638,7 @@ jobs:
                                       DropdownMenuItem(
                                           text = { Text("Rename") },
                                           leadingIcon = {
-                                              Icon(Icons.Default.Edit, null, Modifier.size(19.dp))
+                                              Icon(Icons.Default.Edit, null, Modifier.size(22.dp))
                                           },
                                           onClick = {
                                               showMoreMenu = false
@@ -4356,7 +4648,7 @@ jobs:
                                       DropdownMenuItem(
                                           text = { Text("Move to folder") },
                                           leadingIcon = {
-                                              Icon(Icons.Outlined.Folder, null, Modifier.size(19.dp))
+                                              Icon(Icons.Outlined.Folder, null, Modifier.size(22.dp))
                                           },
                                           onClick = {
                                               showMoreMenu = false
@@ -4380,7 +4672,7 @@ jobs:
                                                   Icons.Default.Delete,
                                                   null,
                                                   tint = MaterialTheme.colorScheme.error,
-                                                  modifier = Modifier.size(19.dp)
+                                                  modifier = Modifier.size(22.dp)
                                               )
                                           },
                                           onClick = {
@@ -4388,6 +4680,7 @@ jobs:
                                               onRequestDelete(buildCurrentNote())
                                           }
                                       )
+                                  }
                                   }
                               }
                           }
@@ -4521,12 +4814,17 @@ jobs:
                           .pointerInput(Unit) {
                               awaitEachGesture {
                                   val down = awaitFirstDown(requireUnconsumed = false)
-                                  selectionDragFingerYInViewport = down.position.y
+                                  if (!bodyIsFocused) {
+                                      tapDownY[0] = down.position.y
+                                      tapSelectionAtDown[0] = textFieldValue.selection
+                                      tapRequestSerial++
+                                  }
+                                  if (!textFieldValue.selection.collapsed) selectionDragFingerYInViewport = down.position.y
                                   do {
                                       val event = awaitPointerEvent()
                                       val change = event.changes.firstOrNull()
                                       if (change != null && change.pressed) {
-                                          selectionDragFingerYInViewport = change.position.y
+                                          if (!textFieldValue.selection.collapsed) selectionDragFingerYInViewport = change.position.y
                                       }
                                   } while (event.changes.any { it.pressed })
                                   selectionDragFingerYInViewport = null
